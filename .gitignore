@@ -1,0 +1,29 @@
+# OS / editor files
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+
+# Node / tool caches
+node_modules/
+.npm/
+coverage/
+*.log
+*.tmp
+*.temp
+
+# Local reference plugin files
+/bilibili-helper-3.0.4.crx
+/bilibili-helper-3.0.4/
+
+# Local saved page fixtures
+/*_bilibili.html
+/*_bilibili_files/
+/有声书整理规范 _ 稳健wiki.html
+/有声书整理规范 _ 稳健wiki_files/
+
+# Optional local export / scratch directories
+/exports/
+/output/
+/tmp/
