@@ -1,0 +1,72 @@
+name: Publish Userscript Channel
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-userscript-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check source syntax
+        run: |
+          node --check src/shared/bilibili-parser.js
+          node --check src/browser/exporter.js
+
+      - name: Build live userscript
+        env:
+          USERSCRIPT_VERSION: 0.1.${{ github.run_number }}.${{ github.run_attempt }}
+          USERSCRIPT_DOWNLOAD_URL: https://raw.githubusercontent.com/${{ github.repository }}/userscript-dist/bilibili-audiobook-exporter.user.js
+          USERSCRIPT_UPDATE_URL: https://raw.githubusercontent.com/${{ github.repository }}/userscript-dist/bilibili-audiobook-exporter.user.js
+          USERSCRIPT_HOMEPAGE_URL: https://github.com/${{ github.repository }}
+          USERSCRIPT_SUPPORT_URL: https://github.com/${{ github.repository }}/issues
+        run: node tools/build-userscript.mjs
+
+      - name: Publish live channel branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          publish_dir="$(mktemp -d)"
+          cp dist/bilibili-audiobook-exporter.user.js "$publish_dir/bilibili-audiobook-exporter.user.js"
+
+          cat > "$publish_dir/README.md" <<'EOF'
+          # Live userscript channel
+
+          This branch is maintained automatically by GitHub Actions.
+
+          Install:
+          https://raw.githubusercontent.com/${{ github.repository }}/userscript-dist/bilibili-audiobook-exporter.user.js
+          EOF
+
+          cd "$publish_dir"
+          git init
+          git checkout -b userscript-dist
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bilibili-audiobook-exporter.user.js README.md
+          git commit -m "Publish userscript for ${GITHUB_SHA}"
+          git push --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:userscript-dist

@@ -4,6 +4,10 @@
 // @version      0.1.0
 // @description  Export current Bilibili video as audiobook-style files with metadata.json and cover.
 // @match        https://www.bilibili.com/video/*
+// @homepageURL  https://github.com/zzzwannasleep/AudioBookScript
+// @supportURL   https://github.com/zzzwannasleep/AudioBookScript/issues
+// @downloadURL  https://raw.githubusercontent.com/zzzwannasleep/AudioBookScript/userscript-dist/bilibili-audiobook-exporter.user.js
+// @updateURL    https://raw.githubusercontent.com/zzzwannasleep/AudioBookScript/userscript-dist/bilibili-audiobook-exporter.user.js
 // @grant        none
 // ==/UserScript==
 
