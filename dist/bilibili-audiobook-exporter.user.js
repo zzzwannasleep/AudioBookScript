@@ -1532,6 +1532,7 @@
         trackNumber: chapter.trackNumber || index + 1,
         trackTotal: total,
         pageNumber: chapter.pageNumber || index + 1,
+        bvid: chapter.bvid || extractBvidFromText(chapter.url || ""),
         cid: chapter.cid || "",
         title: normalizeChapterTitle(chapter.title, "第" + String(index + 1) + "章"),
         url: chapter.url || root.location.href,
@@ -1860,6 +1861,7 @@
       collected.push({
         trackNumber: fallbackIndex + 1,
         pageNumber: pageNumber,
+        bvid: bvid,
         cid: cid,
         title: buildCollectionArchiveTitle(archive, fallbackIndex),
         url: url,
@@ -2304,6 +2306,219 @@
     return response.blob();
   }
 
+  function formatUnixTimestamp(timestamp) {
+    var numeric = Number(timestamp || 0);
+
+    if (!Number.isFinite(numeric) || numeric <= 0) {
+      return "";
+    }
+
+    try {
+      return new Date(numeric * 1000).toISOString();
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function getChapterPageNumber(chapter) {
+    var value = Number(chapter && chapter.pageNumber ? chapter.pageNumber : 1);
+
+    if (!Number.isFinite(value) || value <= 0) {
+      return 1;
+    }
+
+    return Math.floor(value);
+  }
+
+  function getChapterBvid(chapter) {
+    if (chapter && chapter.bvid) {
+      return String(chapter.bvid);
+    }
+
+    return extractBvidFromText((chapter && chapter.url) || "");
+  }
+
+  function getSameOriginPage(url) {
+    try {
+      return new URL(url, root.location.href).origin === root.location.origin;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function pickBestAudioUrl(playurlData) {
+    var dashAudio =
+      playurlData &&
+      playurlData.dash &&
+      Array.isArray(playurlData.dash.audio)
+        ? playurlData.dash.audio.slice()
+        : [];
+
+    if (dashAudio.length) {
+      dashAudio.sort(function (left, right) {
+        return Number(right.bandwidth || 0) - Number(left.bandwidth || 0);
+      });
+
+      return Parser.normalizeUrl(
+        dashAudio[0].baseUrl ||
+          dashAudio[0].base_url ||
+          (Array.isArray(dashAudio[0].backupUrl) && dashAudio[0].backupUrl[0]) ||
+          (Array.isArray(dashAudio[0].backup_url) && dashAudio[0].backup_url[0]) ||
+          ""
+      );
+    }
+
+    if (Array.isArray(playurlData && playurlData.durl) && playurlData.durl.length) {
+      return Parser.normalizeUrl(playurlData.durl[0].url || "");
+    }
+
+    return "";
+  }
+
+  function dedupeStrings(values) {
+    var seen = new Set();
+    var result = [];
+
+    (values || []).forEach(function (value) {
+      var normalized = String(value || "").trim();
+
+      if (!normalized || seen.has(normalized)) {
+        return;
+      }
+
+      seen.add(normalized);
+      result.push(normalized);
+    });
+
+    return result;
+  }
+
+  function buildChapterSourceUrl(chapter, bvid) {
+    if (chapter && chapter.url) {
+      return chapter.url;
+    }
+
+    if (bvid) {
+      return buildPageUrl("https://www.bilibili.com/video/" + bvid + "/", getChapterPageNumber(chapter));
+    }
+
+    return root.location.href;
+  }
+
+  function pickChapterCidFromViewData(chapter, viewData) {
+    var directCid = String((chapter && chapter.cid) || "");
+    var pages = viewData && Array.isArray(viewData.pages) ? viewData.pages : [];
+    var pageNumber = getChapterPageNumber(chapter);
+    var matchedPage;
+
+    if (directCid) {
+      return directCid;
+    }
+
+    matchedPage = pages.find(function (page) {
+      return Number(page.page || 0) === pageNumber;
+    });
+
+    if (matchedPage && matchedPage.cid) {
+      return String(matchedPage.cid);
+    }
+
+    if (viewData && viewData.cid) {
+      return String(viewData.cid);
+    }
+
+    if (pages.length && pages[0].cid) {
+      return String(pages[0].cid);
+    }
+
+    return "";
+  }
+
+  function buildParsedFromApiData(chapter, viewData, playurlData) {
+    var sourceUrl = buildChapterSourceUrl(chapter, getChapterBvid(chapter));
+    var parsed = state.parsed ? cloneParsed(state.parsed, sourceUrl) : {};
+    var ownerName = viewData && viewData.owner ? String(viewData.owner.name || "") : "";
+    var coverUrl = Parser.normalizeBiliCoverUrl(
+      (viewData && viewData.pic) || parsed.coverUrl || ""
+    );
+    var audioUrl = pickBestAudioUrl(playurlData);
+    var videoTitle = String((chapter && chapter.title) || (viewData && viewData.title) || parsed.videoTitle || "");
+    var summary = parsed.summary || String((viewData && viewData.desc) || videoTitle || "");
+    var publishedAt = formatUnixTimestamp(viewData && viewData.pubdate);
+    var durationMs = Number(
+      (playurlData && playurlData.timelength) ||
+        ((viewData && viewData.duration) ? Number(viewData.duration) * 1000 : 0) ||
+        parsed.durationMs ||
+        0
+    );
+    var bvid = getChapterBvid(chapter) || String((viewData && viewData.bvid) || "");
+    var cid = pickChapterCidFromViewData(chapter, viewData);
+    var nextBundle;
+
+    if (!audioUrl) {
+      throw new Error("API did not return an audio stream");
+    }
+
+    parsed.version = parsed.version || Parser.version || "0.1.0";
+    parsed.sourceUrl = sourceUrl;
+    parsed.videoTitle = videoTitle;
+    parsed.bookTitle = parsed.bookTitle || videoTitle;
+    parsed.descriptionText = String((viewData && viewData.desc) || parsed.descriptionText || "");
+    parsed.summary = summary;
+    parsed.uploaderName = parsed.uploaderName || ownerName;
+    parsed.uploaderBio = parsed.uploaderBio || "";
+    parsed.authors = Array.isArray(parsed.authors) ? dedupeStrings(parsed.authors) : [];
+    parsed.narrators = Array.isArray(parsed.narrators) ? dedupeStrings(parsed.narrators) : [];
+    parsed.tags = Array.isArray(parsed.tags) ? parsed.tags : [];
+    parsed.coverUrl = coverUrl;
+    parsed.audioUrl = audioUrl;
+    parsed.publishedAt = publishedAt || parsed.publishedAt || "";
+    parsed.durationMs = Number.isFinite(durationMs) ? durationMs : 0;
+    parsed.bvid = bvid;
+    parsed.aid = String((viewData && viewData.aid) || parsed.aid || "");
+    parsed.cid = cid;
+
+    if (!parsed.narrators.length && parsed.uploaderName) {
+      parsed.narrators = [parsed.uploaderName];
+    }
+
+    parsed.parsedFrom = dedupeStrings((parsed.parsedFrom || []).concat(["view-api", "playurl-api"]));
+    nextBundle = Parser.buildMetadata(parsed, {});
+    parsed.suggestedFolderName = nextBundle.folderName;
+    parsed.audioFileName = nextBundle.audioFileName;
+    parsed.metadata = nextBundle.metadata;
+    parsed.series = nextBundle.series;
+
+    return parsed;
+  }
+
+  async function resolveChapterParsedViaApi(chapter, label) {
+    var bvid = getChapterBvid(chapter);
+
+    if (!bvid) {
+      throw new Error(label + " 缺少 bvid，无法走 API 解析");
+    }
+
+    var viewPayload = await fetchJson("/x/web-interface/view", {
+      bvid: bvid,
+    });
+    var viewData = viewPayload && viewPayload.data ? viewPayload.data : {};
+    var cid = pickChapterCidFromViewData(chapter, viewData);
+
+    if (!cid) {
+      throw new Error(label + " 无法从 view 接口确定 cid");
+    }
+
+    var playurlPayload = await fetchJson("/x/player/playurl", {
+      bvid: bvid,
+      cid: cid,
+      qn: 80,
+      fnval: 16,
+    });
+
+    return buildParsedFromApiData(chapter, viewData, playurlPayload && playurlPayload.data);
+  }
+
   async function fetchText(url, label) {
     if (!url) {
       throw new Error(label + " 链接为空");
@@ -2322,7 +2537,7 @@
     return response.text();
   }
 
-  async function resolveChapterParsed(chapter) {
+  async function resolveChapterParsedLegacy(chapter) {
     var label = "第 " + Parser.formatTrackNumber(chapter.trackNumber, chapter.trackTotal) + " 章";
 
     if (chapter.isCurrent && state.parsed && state.parsed.audioUrl) {
@@ -2338,6 +2553,33 @@
     }
 
     return parsed;
+  }
+
+  async function resolveChapterParsed(chapter) {
+    var label = "Chapter " + Parser.formatTrackNumber(chapter.trackNumber, chapter.trackTotal);
+    var shouldPreferApi = state.pageContext && state.pageContext.kind === "space-collection";
+
+    if (chapter.isCurrent && state.parsed && state.parsed.audioUrl) {
+      return cloneParsed(state.parsed, chapter.url);
+    }
+
+    if (shouldPreferApi) {
+      return resolveChapterParsedViaApi(chapter, label);
+    }
+
+    try {
+      var parsed = await resolveChapterParsedLegacy(chapter);
+
+      if (parsed && parsed.audioUrl) {
+        return parsed;
+      }
+    } catch (error) {
+      if (!getChapterBvid(chapter) || getSameOriginPage(chapter.url)) {
+        throw error;
+      }
+    }
+
+    return resolveChapterParsedViaApi(chapter, label);
   }
 
   async function downloadSingleZip() {
