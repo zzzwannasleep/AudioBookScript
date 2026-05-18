@@ -4,6 +4,7 @@
 // @version      0.1.0
 // @description  Export current Bilibili video as audiobook-style files with metadata.json and cover.
 // @match        https://www.bilibili.com/video/*
+// @match        https://space.bilibili.com/*
 // @homepageURL  https://github.com/zzzwannasleep/AudioBookScript
 // @supportURL   https://github.com/zzzwannasleep/AudioBookScript/issues
 // @downloadURL  https://raw.githubusercontent.com/zzzwannasleep/AudioBookScript/userscript-dist/bilibili-audiobook-exporter.user.js
@@ -871,6 +872,7 @@
   var Parser = root.BilibiliAudiobookParser;
   var ZipBuilder = root.BilibiliZipBuilder;
   var BuildInfo = root.__BILIBILI_AUDIOBOOK_BUILD_INFO__ || {};
+  var BILIBILI_API_ORIGIN = "https://api.bilibili.com";
   var UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
   var UPDATE_STORAGE_KEY = "bilibili-audiobook-exporter:update-state";
 
@@ -889,7 +891,68 @@
     return;
   }
 
-  if (!/https:\/\/www\.bilibili\.com\/video\//.test(root.location.href)) {
+  function isVideoPageUrl(url) {
+    return /https:\/\/www\.bilibili\.com\/video\//.test(String(url || ""));
+  }
+
+  function getSpaceCollectionContext(urlString) {
+    try {
+      var url = new URL(urlString || root.location.href, root.location.href);
+      var match;
+      var type;
+      var collectionType = "season";
+
+      if (url.hostname !== "space.bilibili.com") {
+        return null;
+      }
+
+      match = /^\/(\d+)\/lists\/(\d+)\/?$/.exec(url.pathname);
+      if (!match) {
+        return null;
+      }
+
+      type = String(url.searchParams.get("type") || "season").toLowerCase();
+      if (type === "series") {
+        collectionType = "series";
+      } else if (type === "fav-season" || type === "fav_season" || type === "favorite") {
+        collectionType = "fav-season";
+      }
+
+      return {
+        kind: "space-collection",
+        mid: match[1],
+        listId: match[2],
+        collectionType: collectionType,
+        url: url.toString(),
+      };
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function getPageContext(urlString) {
+    var collection = getSpaceCollectionContext(urlString);
+
+    if (collection) {
+      return collection;
+    }
+
+    if (isVideoPageUrl(urlString)) {
+      return {
+        kind: "video",
+        url: String(urlString || root.location.href),
+      };
+    }
+
+    return {
+      kind: "unsupported",
+      url: String(urlString || root.location.href),
+    };
+  }
+
+  var initialPageContext = getPageContext(root.location.href);
+
+  if (initialPageContext.kind === "unsupported") {
     console.warn("[bilibili-audiobook-exporter] 当前版本只针对普通视频页启用。");
     return;
   }
@@ -897,6 +960,7 @@
   var state = {
     parsed: null,
     chapters: [],
+    pageContext: initialPageContext,
     mounted: false,
     exporting: false,
     update: {
@@ -1313,6 +1377,105 @@
     dom.overlay.classList.remove("is-open");
   }
 
+  function extractBvidFromText(value) {
+    var match = /(BV[0-9A-Za-z]{10,})/.exec(String(value || ""));
+    return match && match[1] ? match[1] : "";
+  }
+
+  function readPath(source, path) {
+    var current = source;
+    var segments = String(path || "").split(".");
+    var index;
+
+    for (index = 0; index < segments.length; index += 1) {
+      if (current == null || typeof current !== "object") {
+        return undefined;
+      }
+
+      current = current[segments[index]];
+    }
+
+    return current;
+  }
+
+  function firstNonEmptyPath(source, paths) {
+    var index;
+
+    for (index = 0; index < paths.length; index += 1) {
+      var value = readPath(source, paths[index]);
+
+      if (typeof value === "string" && value.trim()) {
+        return value.trim();
+      }
+
+      if (typeof value === "number" && Number.isFinite(value)) {
+        return String(value);
+      }
+    }
+
+    return "";
+  }
+
+  function firstArrayPath(source, paths) {
+    var index;
+
+    for (index = 0; index < paths.length; index += 1) {
+      var value = readPath(source, paths[index]);
+
+      if (Array.isArray(value)) {
+        return value;
+      }
+    }
+
+    return [];
+  }
+
+  function mergeCollectionMeta(left, right) {
+    return {
+      title: right.title || left.title || "",
+      description: right.description || left.description || "",
+      ownerName: right.ownerName || left.ownerName || "",
+      coverUrl: right.coverUrl || left.coverUrl || "",
+    };
+  }
+
+  async function fetchJson(path, params) {
+    var requestUrl = new URL(path, BILIBILI_API_ORIGIN);
+    var query = params || {};
+    var key;
+
+    for (key in query) {
+      if (
+        Object.prototype.hasOwnProperty.call(query, key) &&
+        query[key] != null &&
+        query[key] !== ""
+      ) {
+        requestUrl.searchParams.set(key, String(query[key]));
+      }
+    }
+
+    var response = await fetch(requestUrl.toString(), {
+      credentials: "include",
+      mode: "cors",
+      referrer: root.location.href,
+      headers: {
+        Accept: "application/json, text/plain, */*",
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error("HTTP " + response.status);
+    }
+
+    var payload = await response.json();
+
+    if (payload && typeof payload.code !== "undefined" && payload.code !== 0) {
+      throw new Error((payload.message || payload.msg || "API error") + " (" + payload.code + ")");
+    }
+
+    return payload;
+  }
+
   function getCurrentPageNumber() {
     try {
       var url = new URL(root.location.href);
@@ -1364,8 +1527,7 @@
 
   function finalizeChapterList(chapters) {
     var total = chapters.length;
-
-    return chapters.map(function (chapter, index) {
+    var normalized = chapters.map(function (chapter, index) {
       return {
         trackNumber: chapter.trackNumber || index + 1,
         trackTotal: total,
@@ -1376,6 +1538,18 @@
         isCurrent: Boolean(chapter.isCurrent),
       };
     });
+
+    if (normalized.length) {
+      var hasCurrent = normalized.some(function (chapter) {
+        return chapter.isCurrent;
+      });
+
+      if (!hasCurrent) {
+        normalized[0].isCurrent = true;
+      }
+    }
+
+    return normalized;
   }
 
   function extractVideoPageChapters(initialState, parsed) {
@@ -1485,7 +1659,363 @@
     return finalizeChapterList(collected);
   }
 
-  function extractRuntimeChapters(parsed) {
+  function getCollectionCurrentBvid() {
+    var selectors = [
+      'a[href*="/video/BV"][aria-current="page"]',
+      'a[href*="/video/BV"][aria-selected="true"]',
+      '.active a[href*="/video/BV"]',
+      '.is-active a[href*="/video/BV"]',
+      'a[href*="/video/BV"].active',
+      'a[href*="/video/BV"].is-active',
+    ];
+    var index;
+
+    for (index = 0; index < selectors.length; index += 1) {
+      var candidate = document.querySelector(selectors[index]);
+
+      if (candidate && candidate.href) {
+        var bvid = extractBvidFromText(candidate.href);
+
+        if (bvid) {
+          return bvid;
+        }
+      }
+    }
+
+    return "";
+  }
+
+  function getCollectionArchiveItems(data) {
+    return firstArrayPath(data, [
+      "archives",
+      "list.archives",
+      "items",
+      "medias",
+      "videos",
+      "vlist",
+      "list.vlist",
+      "list",
+    ]);
+  }
+
+  function getCollectionPageTotal(data) {
+    var value = Number(
+      firstNonEmptyPath(data, [
+        "page.total",
+        "page.count",
+        "total",
+        "count",
+        "page_info.total",
+      ])
+    );
+
+    if (!Number.isFinite(value) || value <= 0) {
+      return 0;
+    }
+
+    return Math.floor(value);
+  }
+
+  function extractCollectionMeta(data, items) {
+    return {
+      title: firstNonEmptyPath(data, [
+        "meta.name",
+        "meta.title",
+        "season.name",
+        "season.title",
+        "series.name",
+        "series.title",
+        "info.name",
+        "info.title",
+        "list_info.name",
+        "list_info.title",
+      ]),
+      description: firstNonEmptyPath(data, [
+        "meta.description",
+        "meta.desc",
+        "meta.intro",
+        "meta.summary",
+        "season.description",
+        "season.desc",
+        "series.description",
+        "series.desc",
+        "series.intro",
+        "info.description",
+        "info.desc",
+        "info.intro",
+      ]),
+      ownerName: firstNonEmptyPath(data, [
+        "meta.upper.name",
+        "meta.owner.name",
+        "owner.name",
+        "upper.name",
+        "info.upper.name",
+        "info.owner.name",
+      ]),
+      coverUrl:
+        Parser.normalizeBiliCoverUrl(
+          firstNonEmptyPath(data, [
+            "meta.cover",
+            "meta.square_cover",
+            "meta.pic",
+            "season.cover",
+            "series.cover",
+            "info.cover",
+            "info.pic",
+          ])
+        ) ||
+        Parser.normalizeBiliCoverUrl(
+          firstNonEmptyPath(items && items[0], ["cover", "pic", "arc.pic", "author.face"])
+        ),
+    };
+  }
+
+  function getCollectionArchiveBvid(archive) {
+    return firstNonEmptyPath(archive, ["bvid", "bv_id", "arc.bvid", "video.bvid"]);
+  }
+
+  function getCollectionArchiveCid(archive) {
+    return String(
+      firstNonEmptyPath(archive, ["cid", "page.cid", "pages.0.cid", "arc.cid"]) || ""
+    );
+  }
+
+  function getCollectionArchivePageNumber(archive, fallbackValue) {
+    var value = Number(
+      firstNonEmptyPath(archive, ["page.page", "pages.0.page", "arc.page", "page"]) ||
+        fallbackValue ||
+        1
+    );
+
+    if (!Number.isFinite(value) || value <= 0) {
+      return fallbackValue || 1;
+    }
+
+    return Math.floor(value);
+  }
+
+  function buildCollectionArchiveUrl(parsed, archive, fallbackIndex) {
+    var directUrl = firstNonEmptyPath(archive, [
+      "share_url",
+      "short_link",
+      "url",
+      "uri",
+      "link",
+      "jump_url",
+      "arc.jump_url",
+    ]);
+    var bvid = getCollectionArchiveBvid(archive);
+    var pageNumber = getCollectionArchivePageNumber(archive, 1);
+
+    if (directUrl) {
+      return Parser.normalizeUrl(directUrl);
+    }
+
+    if (bvid) {
+      return buildPageUrl("https://www.bilibili.com/video/" + bvid + "/", pageNumber);
+    }
+
+    return "";
+  }
+
+  function buildCollectionArchiveTitle(archive, fallbackIndex) {
+    var title = firstNonEmptyPath(archive, [
+      "title",
+      "intro",
+      "name",
+      "arc.title",
+      "page.part",
+      "pages.0.part",
+    ]);
+    var subtitle = firstNonEmptyPath(archive, ["long_title", "subtitle", "arc.subtitle"]);
+    var segments = [title, subtitle].filter(function (value, index, array) {
+      return value && array.indexOf(value) === index;
+    });
+
+    if (segments.length) {
+      return segments.join(" - ");
+    }
+
+    return "Chapter " + String(fallbackIndex + 1);
+  }
+
+  function buildCollectionChapters(parsed, archives) {
+    var currentBvid = getCollectionCurrentBvid();
+    var collected = [];
+    var seen = new Set();
+
+    archives.forEach(function (archive) {
+      var fallbackIndex = collected.length;
+      var bvid = getCollectionArchiveBvid(archive);
+      var cid = getCollectionArchiveCid(archive);
+      var url = buildCollectionArchiveUrl(parsed, archive, fallbackIndex);
+      var pageNumber = getCollectionArchivePageNumber(archive, fallbackIndex + 1);
+      var key = [bvid || "", cid, url].join("|");
+
+      if (!url || seen.has(key)) {
+        return;
+      }
+
+      seen.add(key);
+      collected.push({
+        trackNumber: fallbackIndex + 1,
+        pageNumber: pageNumber,
+        cid: cid,
+        title: buildCollectionArchiveTitle(archive, fallbackIndex),
+        url: url,
+        isCurrent:
+          (currentBvid && bvid && currentBvid === bvid) ||
+          (cid && String(parsed.cid || "") === cid),
+      });
+    });
+
+    return finalizeChapterList(collected);
+  }
+
+  async function fetchCollectionArchivePage(pageContext, pageNumber, pageSize) {
+    if (pageContext.collectionType === "series") {
+      return fetchJson("/x/series/archives", {
+        mid: pageContext.mid,
+        current_mid: pageContext.mid,
+        series_id: pageContext.listId,
+        only_normal: "true",
+        ps: pageSize,
+        pn: pageNumber,
+      });
+    }
+
+    if (pageContext.collectionType === "fav-season") {
+      return fetchJson("/x/space/fav/season/list", {
+        season_id: pageContext.listId,
+        ps: pageSize,
+        pn: pageNumber,
+      });
+    }
+
+    return fetchJson("/x/polymer/web-space/seasons_archives_list", {
+      mid: pageContext.mid,
+      season_id: pageContext.listId,
+      sort_reverse: "false",
+      page_size: pageSize,
+      page_num: pageNumber,
+    });
+  }
+
+  async function fetchCollectionData(pageContext, parsed) {
+    var pageNumber = 1;
+    var pageSize = 100;
+    var pagesGuard = 0;
+    var archives = [];
+    var meta = {
+      title: "",
+      description: "",
+      ownerName: "",
+      coverUrl: "",
+    };
+
+    while (pagesGuard < 50) {
+      var payload = await fetchCollectionArchivePage(pageContext, pageNumber, pageSize);
+      var data = payload && payload.data ? payload.data : {};
+      var items = getCollectionArchiveItems(data);
+
+      meta = mergeCollectionMeta(meta, extractCollectionMeta(data, items));
+
+      if (!items.length) {
+        break;
+      }
+
+      archives = archives.concat(items);
+
+      var total = getCollectionPageTotal(data);
+      if ((total && archives.length >= total) || items.length < pageSize) {
+        break;
+      }
+
+      pageNumber += 1;
+      pagesGuard += 1;
+    }
+
+    var chapters = buildCollectionChapters(parsed, archives);
+
+    if (!chapters.length) {
+      throw new Error("Unable to parse collection chapters");
+    }
+
+    return {
+      chapters: chapters,
+      meta: meta,
+    };
+  }
+
+  function getCurrentChapterFromList(chapters) {
+    var current = chapters.find(function (chapter) {
+      return chapter.isCurrent;
+    });
+
+    return current || chapters[0] || null;
+  }
+
+  function applyCollectionMeta(parsed, collectionMeta, chapters) {
+    var next = cloneParsed(parsed, parsed.sourceUrl);
+    var currentChapter = getCurrentChapterFromList(chapters);
+    var ownerName = collectionMeta.ownerName || next.uploaderName || "";
+    var bundle;
+
+    if (collectionMeta.title) {
+      next.bookTitle = collectionMeta.title;
+      next.videoTitle = next.videoTitle || collectionMeta.title;
+    }
+
+    if (collectionMeta.description) {
+      next.descriptionText = collectionMeta.description;
+      next.summary = collectionMeta.description;
+    }
+
+    if (collectionMeta.coverUrl) {
+      next.coverUrl = collectionMeta.coverUrl;
+    }
+
+    if (!next.uploaderName && ownerName) {
+      next.uploaderName = ownerName;
+    }
+
+    if ((!next.narrators || !next.narrators.length) && ownerName) {
+      next.narrators = [ownerName];
+    }
+
+    bundle = Parser.buildMetadata(next, {
+      seriesTitle: next.bookTitle || next.videoTitle,
+      episodeTitle:
+        (currentChapter && currentChapter.title) || next.videoTitle || next.bookTitle,
+      authors: (next.authors || []).join(" / "),
+      narrators: (next.narrators || []).join(" / "),
+      description: next.summary || "",
+    });
+
+    next.suggestedFolderName = bundle.folderName;
+    next.audioFileName = bundle.audioFileName;
+    next.metadata = bundle.metadata;
+    next.series = bundle.series;
+    next.parsedFrom = (next.parsedFrom || []).concat(["space-collection-api"]).filter(function (
+      value,
+      index,
+      array
+    ) {
+      return value && array.indexOf(value) === index;
+    });
+
+    return next;
+  }
+
+  function resolveParsedSourceUrl(parsed, pageContext) {
+    if (pageContext && pageContext.kind === "video") {
+      return buildPageUrl(parsed.sourceUrl || root.location.href, getCurrentPageNumber());
+    }
+
+    return root.location.href;
+  }
+
+  function extractVideoRuntimeChapters(parsed) {
     var initialState = getRuntimeInitialState();
     var chapters = extractVideoPageChapters(initialState, parsed);
 
@@ -1510,12 +2040,24 @@
     ]);
   }
 
-  function getCurrentChapter() {
-    var current = state.chapters.find(function (chapter) {
-      return chapter.isCurrent;
-    });
+  async function resolvePageState(parsed, pageContext) {
+    if (pageContext && pageContext.kind === "space-collection") {
+      var collectionData = await fetchCollectionData(pageContext, parsed);
 
-    return current || state.chapters[0] || null;
+      return {
+        parsed: applyCollectionMeta(parsed, collectionData.meta, collectionData.chapters),
+        chapters: collectionData.chapters,
+      };
+    }
+
+    return {
+      parsed: parsed,
+      chapters: extractVideoRuntimeChapters(parsed),
+    };
+  }
+
+  function getCurrentChapter() {
+    return getCurrentChapterFromList(state.chapters);
   }
 
   function updateActionState() {
@@ -1531,12 +2073,12 @@
     renderUpdateState();
   }
 
-  function parseCurrentPage() {
+  function parseCurrentPageLegacy() {
     state.parsed = Parser.parseHtml(document.documentElement.outerHTML, {
       url: root.location.href,
     });
     state.parsed.sourceUrl = buildPageUrl(state.parsed.sourceUrl || root.location.href, getCurrentPageNumber());
-    state.chapters = extractRuntimeChapters(state.parsed);
+    state.chapters = extractVideoRuntimeChapters(state.parsed);
 
     var currentChapter = getCurrentChapter();
 
@@ -1569,6 +2111,102 @@
         state.chapters.length > 1 ? "已可直接下载多章节 ZIP。" : "当前更适合用单集 ZIP。",
       ].join("\n")
     );
+
+    updateActionState();
+  }
+
+  async function parseCurrentPage() {
+    state.pageContext = getPageContext(root.location.href);
+    state.parsed = null;
+    state.chapters = [];
+    setStatus(
+      state.pageContext.kind === "space-collection"
+        ? "Resolving collection chapters..."
+        : "Waiting for page analysis..."
+    );
+    updateActionState();
+
+    try {
+      var parsed = Parser.parseHtml(document.documentElement.outerHTML, {
+        url: root.location.href,
+      });
+      var resolvedState;
+      var currentChapter;
+
+      parsed.sourceUrl = resolveParsedSourceUrl(parsed, state.pageContext);
+      resolvedState = await resolvePageState(parsed, state.pageContext);
+      state.parsed = resolvedState.parsed;
+      state.chapters = resolvedState.chapters;
+      currentChapter = getCurrentChapter();
+      dom.audioPill.textContent = state.parsed.audioUrl ? "Audio: ready" : "Audio: pending";
+      dom.coverPill.textContent = state.parsed.coverUrl ? "Cover: ready" : "Cover: pending";
+      dom.metaPill.textContent =
+        state.parsed.bookTitle || state.parsed.videoTitle
+          ? "Metadata: ready"
+          : "Metadata: missing";
+      dom.chapterPill.textContent =
+        state.chapters.length > 1 ? "Chapters: " + state.chapters.length : "Chapters: single";
+      /*
+
+      dom.audioPill.textContent = state.parsed.audioUrl ? "闊抽锛氬凡瑙ｆ瀽" : "闊抽锛氬緟鎶撳彇";
+      dom.coverPill.textContent = state.parsed.coverUrl ? "灏侀潰锛氬凡瑙ｆ瀽" : "灏侀潰锛氭湭瑙ｆ瀽";
+      dom.metaPill.textContent =
+        state.parsed.bookTitle || state.parsed.videoTitle ? "鍏冩暟鎹細宸茶В鏋? : "鍏冩暟鎹細鏈В鏋?;
+      dom.chapterPill.textContent =
+        state.chapters.length > 1 ? "绔犺妭锛? + state.chapters.length + " 绔? : "绔犺妭锛氬崟闆?;
+
+      */
+      dom.fields.seriesTitle.value = state.parsed.bookTitle || state.parsed.videoTitle || "";
+      dom.fields.episodeTitle.value =
+        (currentChapter && currentChapter.title) || state.parsed.videoTitle || state.parsed.bookTitle || "";
+      dom.fields.authors.value = (state.parsed.authors || []).join(" / ");
+      dom.fields.narrators.value = (state.parsed.narrators || []).join(" / ");
+      dom.fields.description.value = state.parsed.summary || "";
+      dom.fields.language.value = state.parsed.metadata.language || "zh-CN";
+      dom.fields.publisher.value = state.parsed.metadata.publisher || "";
+      dom.fields.folderName.value = state.parsed.suggestedFolderName || "";
+      dom.fields.generateCover.checked = true;
+      dom.fields.generateSeriesJson.checked = true;
+      setStatus(
+        [
+          "Analysis complete.",
+          "Series: " + (state.parsed.bookTitle || "Unknown"),
+          "Current chapter: " + ((currentChapter && currentChapter.title) || "Unknown"),
+          "Authors: " + ((state.parsed.authors || []).join(" / ") || "Unknown"),
+          "Chapter count: " + String(state.chapters.length),
+          state.chapters.length > 1
+            ? "Multi-chapter ZIP is ready."
+            : "Single-chapter ZIP is recommended.",
+        ].join("\n")
+      );
+      /*
+
+      setStatus(
+        [
+          "瑙ｆ瀽瀹屾垚銆?,
+          "涔﹀悕锛? + (state.parsed.bookTitle || "鏈瘑鍒?),
+          "褰撳墠绔犺妭锛? + ((currentChapter && currentChapter.title) || "鏈瘑鍒?),
+          "浣滆€咃細" + ((state.parsed.authors || []).join(" / ") || "鏈瘑鍒?),
+          "绔犺妭鏁帮細" + String(state.chapters.length),
+          state.chapters.length > 1 ? "宸插彲鐩存帴涓嬭浇澶氱珷鑺?ZIP銆? : "褰撳墠鏇撮€傚悎鐢ㄥ崟闆?ZIP銆?,
+        ].join("\n")
+      );
+      */
+    } catch (error) {
+      state.parsed = null;
+      state.chapters = [];
+      dom.audioPill.textContent = "Audio: missing";
+      dom.coverPill.textContent = "Cover: missing";
+      dom.metaPill.textContent = "Metadata: missing";
+      dom.chapterPill.textContent = "Chapters: failed";
+      /*
+      dom.audioPill.textContent = "闊抽锛氭湭瑙ｆ瀽";
+      dom.coverPill.textContent = "灏侀潰锛氭湭瑙ｆ瀽";
+      dom.metaPill.textContent = "鍏冩暟鎹細鏈В鏋?";
+      dom.chapterPill.textContent = "绔犺妭锛氳В鏋愬け璐?";
+      */
+      setStatus("Parse failed: " + (error.message || "unknown error"));
+    }
 
     updateActionState();
   }

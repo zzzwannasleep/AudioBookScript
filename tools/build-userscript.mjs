@@ -37,6 +37,7 @@ const header = `// ==UserScript==
 // @version      ${version}
 // @description  Export current Bilibili video as audiobook-style files with metadata.json and cover.
 // @match        https://www.bilibili.com/video/*
+// @match        https://space.bilibili.com/*
 // @homepageURL  ${homepageUrl}
 // @supportURL   ${supportUrl}
 // @downloadURL  ${downloadUrl}
