@@ -95,6 +95,24 @@
     return normalized;
   }
 
+  function dedupeUrlList(values) {
+    var seen = new Set();
+    var result = [];
+
+    (values || []).forEach(function (value) {
+      var normalized = normalizeUrl(value);
+
+      if (!normalized || seen.has(normalized)) {
+        return;
+      }
+
+      seen.add(normalized);
+      result.push(normalized);
+    });
+
+    return result;
+  }
+
   function normalizeBiliCoverUrl(url) {
     var normalized = normalizeUrl(url);
     if (!normalized) {
@@ -336,12 +354,24 @@
     }
   }
 
+  function extractAudioUrlsFromPluginAnchor(html) {
+    var directUrl = extractAudioUrlFromPluginAnchor(html);
+
+    return directUrl ? [directUrl] : [];
+  }
+
   function extractAudioUrlFromPluginLogs(html) {
     return normalizeUrl(
       firstMatch(html, [
         /音频：<\/p><p>(?:&nbsp;|\s)*主链接：\s*([^<\s]+)/i,
       ])
     );
+  }
+
+  function extractAudioUrlsFromPluginLogs(html) {
+    var directUrl = extractAudioUrlFromPluginLogs(html);
+
+    return directUrl ? [directUrl] : [];
   }
 
   function extractPlayInfo(html) {
@@ -358,6 +388,12 @@
   }
 
   function extractAudioUrlFromPlayInfo(playInfo) {
+    var audioUrls = extractAudioUrlsFromPlayInfo(playInfo);
+
+    return audioUrls[0] || "";
+  }
+
+  function extractAudioUrlsFromPlayInfo(playInfo) {
     if (
       !playInfo ||
       !playInfo.data ||
@@ -365,11 +401,29 @@
       !Array.isArray(playInfo.data.dash.audio) ||
       !playInfo.data.dash.audio.length
     ) {
-      return "";
+      return [];
     }
 
-    var audioTrack = playInfo.data.dash.audio[0];
-    return normalizeUrl(audioTrack.baseUrl || audioTrack.base_url || "");
+    var tracks = playInfo.data.dash.audio.slice();
+    var urls = [];
+
+    tracks.sort(function (left, right) {
+      return Number(right.bandwidth || 0) - Number(left.bandwidth || 0);
+    });
+
+    tracks.forEach(function (audioTrack) {
+      urls.push(audioTrack.baseUrl || audioTrack.base_url || "");
+
+      if (Array.isArray(audioTrack.backupUrl)) {
+        urls = urls.concat(audioTrack.backupUrl);
+      }
+
+      if (Array.isArray(audioTrack.backup_url)) {
+        urls = urls.concat(audioTrack.backup_url);
+      }
+    });
+
+    return dedupeUrlList(urls);
   }
 
   function extractDurationMs(playInfo) {
@@ -583,10 +637,12 @@
     var uploaderName = extractUploaderName(meta);
     var uploaderBio = extractUploaderBio(source);
     var playInfo = extractPlayInfo(source);
-    var audioUrl =
-      extractAudioUrlFromPluginAnchor(source) ||
-      extractAudioUrlFromPluginLogs(source) ||
-      extractAudioUrlFromPlayInfo(playInfo);
+    var audioCandidates = dedupeUrlList(
+      extractAudioUrlsFromPluginAnchor(source)
+        .concat(extractAudioUrlsFromPluginLogs(source))
+        .concat(extractAudioUrlsFromPlayInfo(playInfo))
+    );
+    var audioUrl = audioCandidates[0] || "";
 
     var bookTitle = inferBookTitle(descriptionText, videoTitle);
     var authors = inferAuthors(descriptionText);
@@ -618,6 +674,7 @@
         bvid: bvid,
         aid: aid,
         cid: cid,
+        audioCandidates: audioCandidates,
         parsedFrom: audioUrl
           ? ["plugin-link-or-playinfo", "meta", "page-description"]
           : ["meta", "page-description"],
@@ -639,6 +696,7 @@
       tags: tags,
       coverUrl: coverUrl,
       audioUrl: audioUrl,
+      audioCandidates: audioCandidates,
       publishedAt: publishedAt,
       durationMs: durationMs,
       bvid: bvid,

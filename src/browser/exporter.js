@@ -588,6 +588,32 @@
     return Boolean(getUserscriptRequestApi());
   }
 
+  function getUrlHostname(url) {
+    try {
+      return new URL(url, root.location.href).hostname.toLowerCase();
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function isBilibiliResourceUrl(url) {
+    return /(^|\.)(bilibili\.com|bilivideo\.com|bilimg\.com|hdslb\.com)$/.test(
+      getUrlHostname(url)
+    );
+  }
+
+  function buildUserscriptHeaders(url) {
+    if (!isBilibiliResourceUrl(url)) {
+      return {};
+    }
+
+    return {
+      Accept: "*/*",
+      Origin: "https://www.bilibili.com",
+      Referer: "https://www.bilibili.com/",
+    };
+  }
+
   function requestViaUserscript(options) {
     return new Promise(function (resolve, reject) {
       var requester = getUserscriptRequestApi();
@@ -600,6 +626,8 @@
       requester({
         method: options.method || "GET",
         url: options.url,
+        headers: options.headers || {},
+        anonymous: false,
         responseType: options.responseType,
         timeout: options.timeout || 300000,
         onload: function (response) {
@@ -1529,33 +1557,58 @@
     }
   }
 
-  function pickBestAudioUrl(playurlData) {
+  function collectAudioUrls(playurlData) {
     var dashAudio =
       playurlData &&
       playurlData.dash &&
       Array.isArray(playurlData.dash.audio)
         ? playurlData.dash.audio.slice()
         : [];
+    var urls = [];
 
     if (dashAudio.length) {
       dashAudio.sort(function (left, right) {
         return Number(right.bandwidth || 0) - Number(left.bandwidth || 0);
       });
 
-      return Parser.normalizeUrl(
-        dashAudio[0].baseUrl ||
-          dashAudio[0].base_url ||
-          (Array.isArray(dashAudio[0].backupUrl) && dashAudio[0].backupUrl[0]) ||
-          (Array.isArray(dashAudio[0].backup_url) && dashAudio[0].backup_url[0]) ||
-          ""
-      );
+      dashAudio.forEach(function (audioTrack) {
+        urls.push(audioTrack.baseUrl || audioTrack.base_url || "");
+
+        if (Array.isArray(audioTrack.backupUrl)) {
+          urls = urls.concat(audioTrack.backupUrl);
+        }
+
+        if (Array.isArray(audioTrack.backup_url)) {
+          urls = urls.concat(audioTrack.backup_url);
+        }
+      });
     }
 
     if (Array.isArray(playurlData && playurlData.durl) && playurlData.durl.length) {
-      return Parser.normalizeUrl(playurlData.durl[0].url || "");
+      playurlData.durl.forEach(function (segment) {
+        urls.push(segment.url || "");
+
+        if (Array.isArray(segment.backupUrl)) {
+          urls = urls.concat(segment.backupUrl);
+        }
+
+        if (Array.isArray(segment.backup_url)) {
+          urls = urls.concat(segment.backup_url);
+        }
+      });
     }
 
-    return "";
+    return dedupeStrings(
+      urls.map(function (value) {
+        return Parser.normalizeUrl(value);
+      })
+    );
+  }
+
+  function pickBestAudioUrl(playurlData) {
+    var candidates = collectAudioUrls(playurlData);
+
+    return candidates[0] || "";
   }
 
   function dedupeStrings(values) {
@@ -1574,6 +1627,16 @@
     });
 
     return result;
+  }
+
+  function getParsedAudioCandidates(parsed) {
+    return dedupeStrings(
+      [parsed && parsed.audioUrl ? parsed.audioUrl : ""]
+        .concat(Array.isArray(parsed && parsed.audioCandidates) ? parsed.audioCandidates : [])
+        .map(function (value) {
+          return Parser.normalizeUrl(value);
+        })
+    );
   }
 
   function buildChapterSourceUrl(chapter, bvid) {
@@ -1624,7 +1687,8 @@
     var coverUrl = Parser.normalizeBiliCoverUrl(
       (viewData && viewData.pic) || parsed.coverUrl || ""
     );
-    var audioUrl = pickBestAudioUrl(playurlData);
+    var audioCandidates = collectAudioUrls(playurlData);
+    var audioUrl = audioCandidates[0] || "";
     var videoTitle = String((chapter && chapter.title) || (viewData && viewData.title) || parsed.videoTitle || "");
     var summary = parsed.summary || String((viewData && viewData.desc) || videoTitle || "");
     var publishedAt = formatUnixTimestamp(viewData && viewData.pubdate);
@@ -1654,6 +1718,9 @@
     parsed.narrators = Array.isArray(parsed.narrators) ? dedupeStrings(parsed.narrators) : [];
     parsed.tags = Array.isArray(parsed.tags) ? parsed.tags : [];
     parsed.coverUrl = coverUrl;
+    parsed.audioCandidates = dedupeStrings(
+      audioCandidates.concat(Array.isArray(parsed.audioCandidates) ? parsed.audioCandidates : [])
+    );
     parsed.audioUrl = audioUrl;
     parsed.publishedAt = publishedAt || parsed.publishedAt || "";
     parsed.durationMs = Number.isFinite(durationMs) ? durationMs : 0;
@@ -1692,11 +1759,14 @@
       throw new Error(label + " 无法从 view 接口确定 cid");
     }
 
-    var playurlPayload = await fetchJson("/x/player/playurl", {
+    var playurlPayload = await fetchJson("/x/player/wbi/playurl", {
+      avid: String((viewData && viewData.aid) || ""),
       bvid: bvid,
       cid: cid,
       qn: 80,
-      fnval: 16,
+      fnver: 0,
+      fnval: 4048,
+      fourk: 1,
     });
 
     return buildParsedFromApiData(chapter, viewData, playurlPayload && playurlPayload.data);
@@ -1728,6 +1798,7 @@
     if (!getSameOriginPage(url) && canUseUserscriptRequest()) {
       var crossOriginResponse = await requestViaUserscript({
         url: url,
+        headers: buildUserscriptHeaders(url),
         responseType: "arraybuffer",
         label: label,
       });
@@ -1746,6 +1817,7 @@
     if (!getSameOriginPage(url) && canUseUserscriptRequest()) {
       var crossOriginResponse = await requestViaUserscript({
         url: url,
+        headers: buildUserscriptHeaders(url),
         responseType: "text",
         label: label,
       });
@@ -1760,15 +1832,53 @@
     return fetchTextLegacy(url, label);
   }
 
+  async function fetchBlobWithFallback(urls, label) {
+    var candidates = dedupeStrings(
+      (urls || []).map(function (value) {
+        return Parser.normalizeUrl(value);
+      })
+    );
+    var errors = [];
+    var index;
+
+    if (!candidates.length) {
+      throw new Error(label + " has no usable URL");
+    }
+
+    for (index = 0; index < candidates.length; index += 1) {
+      try {
+        return await fetchBlob(
+          candidates[index],
+          candidates.length > 1 ? label + " (" + String(index + 1) + "/" + String(candidates.length) + ")" : label
+        );
+      } catch (error) {
+        errors.push(error && error.message ? error.message : String(error));
+      }
+    }
+
+    throw new Error(
+      label +
+        " failed on all candidate URLs. Last error: " +
+        (errors.length ? errors[errors.length - 1] : "unknown error")
+    );
+  }
+
   async function resolveChapterParsedLegacy(chapter) {
     var label = "第 " + Parser.formatTrackNumber(chapter.trackNumber, chapter.trackTotal) + " 章";
 
     if (chapter.isCurrent && state.parsed && state.parsed.audioUrl) {
-      return cloneParsed(state.parsed, chapter.url);
+      var cachedParsed = cloneParsed(state.parsed, chapter.url);
+
+      cachedParsed.audioCandidates = getParsedAudioCandidates(cachedParsed);
+      cachedParsed.audioUrl = cachedParsed.audioCandidates[0] || cachedParsed.audioUrl || "";
+      return cachedParsed;
     }
 
     var html = await fetchText(chapter.url, label + " 页面");
     var parsed = Parser.parseHtml(html, { url: chapter.url });
+
+    parsed.audioCandidates = getParsedAudioCandidates(parsed);
+    parsed.audioUrl = parsed.audioCandidates[0] || parsed.audioUrl || "";
     parsed.sourceUrl = chapter.url;
 
     if (!parsed.audioUrl) {
@@ -1780,14 +1890,15 @@
 
   async function resolveChapterParsed(chapter) {
     var label = "Chapter " + Parser.formatTrackNumber(chapter.trackNumber, chapter.trackTotal);
-    var shouldPreferApi = state.pageContext && state.pageContext.kind === "space-collection";
+    var bvid = getChapterBvid(chapter);
+    var firstError = null;
 
-    if (chapter.isCurrent && state.parsed && state.parsed.audioUrl) {
-      return cloneParsed(state.parsed, chapter.url);
-    }
-
-    if (shouldPreferApi) {
-      return resolveChapterParsedViaApi(chapter, label);
+    if (bvid) {
+      try {
+        return await resolveChapterParsedViaApi(chapter, label);
+      } catch (error) {
+        firstError = error;
+      }
     }
 
     try {
@@ -1797,12 +1908,16 @@
         return parsed;
       }
     } catch (error) {
-      if (!getChapterBvid(chapter) || getSameOriginPage(chapter.url)) {
-        throw error;
+      if (!firstError) {
+        firstError = error;
       }
     }
 
-    return resolveChapterParsedViaApi(chapter, label);
+    if (firstError) {
+      throw firstError;
+    }
+
+    throw new Error(label + " audio URL could not be resolved");
   }
 
   async function downloadSingleZip() {
@@ -1828,7 +1943,10 @@
       var zipEntries = [];
 
       setStatus("正在下载当前章节音频...");
-      var audioBlob = await fetchBlob(parsedChapter.audioUrl, "当前章节音频");
+      var audioBlob = await fetchBlobWithFallback(
+        getParsedAudioCandidates(parsedChapter),
+        "当前章节音频"
+      );
       zipEntries.push({
         name: rootPrefix + bundle.audioFileName,
         data: audioBlob,
@@ -1934,7 +2052,10 @@
         );
 
         setStatus("正在下载 " + chapterLabel + " 音频...");
-        var audioBlob = await fetchBlob(parsedChapter.audioUrl, chapterLabel + " 音频");
+        var audioBlob = await fetchBlobWithFallback(
+          getParsedAudioCandidates(parsedChapter),
+          chapterLabel + " 音频"
+        );
         zipEntries.push({
           name: rootPrefix + chapterFolderName + "/" + chapterBundle.audioFileName,
           data: audioBlob,
