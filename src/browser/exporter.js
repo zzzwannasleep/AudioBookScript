@@ -2,9 +2,15 @@
   "use strict";
 
   var Parser = root.BilibiliAudiobookParser;
+  var ZipBuilder = root.BilibiliZipBuilder;
 
   if (!Parser) {
     console.error("[bilibili-audiobook-exporter] parser is missing");
+    return;
+  }
+
+  if (!ZipBuilder) {
+    console.error("[bilibili-audiobook-exporter] zip builder is missing");
     return;
   }
 
@@ -20,6 +26,7 @@
 
   var state = {
     parsed: null,
+    chapters: [],
     mounted: false,
     exporting: false,
   };
@@ -33,7 +40,7 @@
       ".be-launcher{border:0;border-radius:999px;padding:12px 18px;background:#00a1d6;color:#fff;font-size:14px;box-shadow:0 10px 30px rgba(0,0,0,.22);cursor:pointer;}",
       ".be-overlay{position:fixed;inset:0;background:rgba(12,18,28,.48);display:none;align-items:center;justify-content:center;padding:24px;}",
       ".be-overlay.is-open{display:flex;}",
-      ".be-panel{width:min(860px,100%);max-height:min(90vh,960px);overflow:auto;background:#fff;border-radius:24px;box-shadow:0 24px 80px rgba(0,0,0,.28);}",
+      ".be-panel{width:min(900px,100%);max-height:min(90vh,960px);overflow:auto;background:#fff;border-radius:24px;box-shadow:0 24px 80px rgba(0,0,0,.28);}",
       ".be-header{display:flex;align-items:flex-start;justify-content:space-between;padding:24px 24px 12px;border-bottom:1px solid #edf2f7;gap:16px;}",
       ".be-title{margin:0;font-size:24px;line-height:1.2;color:#0f172a;}",
       ".be-subtitle{margin:6px 0 0;color:#64748b;font-size:13px;line-height:1.5;}",
@@ -46,6 +53,7 @@
       ".be-input,.be-textarea{width:100%;box-sizing:border-box;border:1px solid #cbd5e1;border-radius:14px;padding:10px 12px;font:inherit;color:#0f172a;background:#fff;}",
       ".be-input:focus,.be-textarea:focus{outline:none;border-color:#00a1d6;box-shadow:0 0 0 3px rgba(0,161,214,.16);}",
       ".be-textarea{min-height:108px;resize:vertical;line-height:1.5;}",
+      ".be-note{margin:0;color:#64748b;font-size:12px;line-height:1.5;}",
       ".be-pill-row{display:flex;flex-wrap:wrap;gap:8px;}",
       ".be-pill{display:inline-flex;align-items:center;gap:6px;padding:8px 10px;border-radius:999px;background:#f8fafc;color:#334155;font-size:12px;}",
       ".be-actions{display:flex;flex-wrap:wrap;gap:10px;padding-top:8px;}",
@@ -72,7 +80,7 @@
       '    <div class="be-header">',
       '      <div>',
       '        <h2 class="be-title">B 站有声书导出</h2>',
-      '        <p class="be-subtitle">优先复用下载插件已解析出的音频直链，再回退到页面 playinfo。</p>',
+      '        <p class="be-subtitle">默认走 ZIP 导出。单集适合短篇，多章节适合多 P 或合集页。</p>',
       "      </div>",
       '      <button class="be-close" type="button" aria-label="关闭">×</button>',
       "    </div>",
@@ -81,27 +89,28 @@
       '        <span class="be-pill" data-pill="audio">音频：未解析</span>',
       '        <span class="be-pill" data-pill="cover">封面：未解析</span>',
       '        <span class="be-pill" data-pill="meta">元数据：未解析</span>',
+      '        <span class="be-pill" data-pill="chapters">章节：未识别</span>',
       "      </div>",
       '      <div class="be-grid">',
-      '        <label class="be-field"><span class="be-label">书名</span><input class="be-input" data-field="seriesTitle" /></label>',
-      '        <label class="be-field"><span class="be-label">副标题 / 当前视频标题</span><input class="be-input" data-field="episodeTitle" /></label>',
+      '        <label class="be-field"><span class="be-label">书名 / 系列名</span><input class="be-input" data-field="seriesTitle" /></label>',
+      '        <label class="be-field"><span class="be-label">当前章节标题（单集模式）</span><input class="be-input" data-field="episodeTitle" /></label>',
       '        <label class="be-field"><span class="be-label">作者</span><input class="be-input" data-field="authors" /></label>',
       '        <label class="be-field"><span class="be-label">播讲 / UP 主</span><input class="be-input" data-field="narrators" /></label>',
       '        <label class="be-field"><span class="be-label">语言 ISO</span><input class="be-input" data-field="language" placeholder="zh-CN" /></label>',
       '        <label class="be-field"><span class="be-label">出版社</span><input class="be-input" data-field="publisher" /></label>',
       '        <label class="be-field be-span-2"><span class="be-label">简介</span><textarea class="be-textarea" data-field="description"></textarea></label>',
-      '        <label class="be-field"><span class="be-label">导出目录名</span><input class="be-input" data-field="folderName" /></label>',
-      '        <label class="be-field"><span class="be-label">音频文件名</span><input class="be-input" data-field="audioFileName" /></label>',
+      '        <label class="be-field be-span-2"><span class="be-label">压缩包 / 根目录名</span><input class="be-input" data-field="folderName" /></label>',
       "      </div>",
+      '      <p class="be-note">音频文件名会自动整理成 `01 - 标题.m4a`。多章节模式会按每章一个子目录打包，系列信息放在压缩包根目录。</p>',
       '      <div class="be-checks">',
       '        <label class="be-check"><input type="checkbox" data-field="generateCover" checked /> 生成 cover.jpg</label>',
       '        <label class="be-check"><input type="checkbox" data-field="generateSeriesJson" checked /> 生成 series.json</label>',
       "      </div>",
       '      <div class="be-actions">',
       '        <button class="be-button secondary" type="button" data-action="refresh">重新解析</button>',
-      '        <button class="be-button secondary" type="button" data-action="copy-audio">复制音频直链</button>',
-      '        <button class="be-button accent" type="button" data-action="download-files">多文件下载</button>',
-      '        <button class="be-button primary" type="button" data-action="export-dir">导出到目录</button>',
+      '        <button class="be-button secondary" type="button" data-action="copy-audio">复制当前音频直链</button>',
+      '        <button class="be-button accent" type="button" data-action="download-single">下载单集 ZIP</button>',
+      '        <button class="be-button primary" type="button" data-action="download-multi">下载多章节 ZIP</button>',
       "      </div>",
       '      <div class="be-status" data-status>等待解析当前页面...</div>',
       "    </div>",
@@ -119,6 +128,13 @@
     dom.audioPill = rootEl.querySelector('[data-pill="audio"]');
     dom.coverPill = rootEl.querySelector('[data-pill="cover"]');
     dom.metaPill = rootEl.querySelector('[data-pill="meta"]');
+    dom.chapterPill = rootEl.querySelector('[data-pill="chapters"]');
+    dom.actions = {
+      refresh: rootEl.querySelector('[data-action="refresh"]'),
+      copyAudio: rootEl.querySelector('[data-action="copy-audio"]'),
+      downloadSingle: rootEl.querySelector('[data-action="download-single"]'),
+      downloadMulti: rootEl.querySelector('[data-action="download-multi"]'),
+    };
     dom.fields = {
       seriesTitle: rootEl.querySelector('[data-field="seriesTitle"]'),
       episodeTitle: rootEl.querySelector('[data-field="episodeTitle"]'),
@@ -128,7 +144,6 @@
       language: rootEl.querySelector('[data-field="language"]'),
       publisher: rootEl.querySelector('[data-field="publisher"]'),
       folderName: rootEl.querySelector('[data-field="folderName"]'),
-      audioFileName: rootEl.querySelector('[data-field="audioFileName"]'),
       generateCover: rootEl.querySelector('[data-field="generateCover"]'),
       generateSeriesJson: rootEl.querySelector('[data-field="generateSeriesJson"]'),
     };
@@ -146,25 +161,247 @@
     dom.overlay.classList.remove("is-open");
   }
 
+  function getCurrentPageNumber() {
+    try {
+      var url = new URL(root.location.href);
+      var value = Number(url.searchParams.get("p") || "1");
+      if (Number.isFinite(value) && value > 0) {
+        return Math.floor(value);
+      }
+    } catch (error) {
+      return 1;
+    }
+
+    return 1;
+  }
+
+  function buildPageUrl(baseUrl, pageNumber) {
+    var fallback = root.location.href;
+    var source = baseUrl || fallback;
+    var url = new URL(source, fallback);
+    var clean = new URL(url.origin + url.pathname);
+
+    if (pageNumber > 1) {
+      clean.searchParams.set("p", String(pageNumber));
+    }
+
+    return clean.toString();
+  }
+
+  function cloneParsed(parsed, sourceUrl) {
+    var next = {};
+    var key;
+
+    for (key in parsed) {
+      if (Object.prototype.hasOwnProperty.call(parsed, key)) {
+        next[key] = parsed[key];
+      }
+    }
+
+    next.sourceUrl = sourceUrl || parsed.sourceUrl || "";
+    return next;
+  }
+
+  function normalizeChapterTitle(value, fallback) {
+    return Parser.sanitizeFileName(value, fallback || "未命名章节");
+  }
+
+  function getRuntimeInitialState() {
+    return root.__INITIAL_STATE__ || null;
+  }
+
+  function finalizeChapterList(chapters) {
+    var total = chapters.length;
+
+    return chapters.map(function (chapter, index) {
+      return {
+        trackNumber: chapter.trackNumber || index + 1,
+        trackTotal: total,
+        pageNumber: chapter.pageNumber || index + 1,
+        cid: chapter.cid || "",
+        title: normalizeChapterTitle(chapter.title, "第" + String(index + 1) + "章"),
+        url: chapter.url || root.location.href,
+        isCurrent: Boolean(chapter.isCurrent),
+      };
+    });
+  }
+
+  function extractVideoPageChapters(initialState, parsed) {
+    if (
+      !initialState ||
+      !initialState.videoData ||
+      !Array.isArray(initialState.videoData.pages) ||
+      initialState.videoData.pages.length <= 1
+    ) {
+      return [];
+    }
+
+    var currentPageNumber = getCurrentPageNumber();
+    var sourceUrl = parsed.sourceUrl || root.location.href;
+
+    return finalizeChapterList(
+      initialState.videoData.pages.map(function (pageItem, index) {
+        var pageNumber = Number(pageItem.page || index + 1) || index + 1;
+        var cid = String(pageItem.cid || "");
+
+        return {
+          trackNumber: index + 1,
+          pageNumber: pageNumber,
+          cid: cid,
+          title: pageItem.part || parsed.videoTitle || "第" + String(index + 1) + "章",
+          url: buildPageUrl(sourceUrl, pageNumber),
+          isCurrent:
+            (cid && String(parsed.cid || "") === cid) || currentPageNumber === pageNumber,
+        };
+      })
+    );
+  }
+
+  function buildSeasonEpisodeUrl(parsed, episode, fallbackIndex) {
+    var directUrl =
+      episode.share_url ||
+      episode.short_link ||
+      episode.url ||
+      episode.link ||
+      episode.jump_url ||
+      "";
+
+    if (directUrl) {
+      return Parser.normalizeUrl(directUrl);
+    }
+
+    if (episode.bvid) {
+      return buildPageUrl("https://www.bilibili.com/video/" + episode.bvid + "/", episode.page || 1);
+    }
+
+    return buildPageUrl(parsed.sourceUrl || root.location.href, fallbackIndex + 1);
+  }
+
+  function buildSeasonEpisodeTitle(episode, fallbackIndex) {
+    var primary = episode.long_title || "";
+    var secondary = episode.title || "";
+    var nested = episode.arc && episode.arc.title ? episode.arc.title : "";
+    var segments = [secondary, primary, nested].filter(function (value, index, array) {
+      return value && array.indexOf(value) === index;
+    });
+
+    if (segments.length) {
+      return segments.join(" - ");
+    }
+
+    return "第" + String(fallbackIndex + 1) + "章";
+  }
+
+  function extractSeasonChapters(initialState, parsed) {
+    var season = initialState && (initialState.ugcSeason || initialState.ugc_season);
+    var sections = season && Array.isArray(season.sections) ? season.sections : [];
+    var collected = [];
+    var seen = new Set();
+    var currentIndex = 0;
+
+    sections.forEach(function (section) {
+      var episodes = Array.isArray(section.episodes) ? section.episodes : [];
+
+      episodes.forEach(function (episode) {
+        var cid = String(episode.cid || "");
+        var url = buildSeasonEpisodeUrl(parsed, episode, currentIndex);
+        var key = [episode.bvid || "", cid, url].join("|");
+
+        if (seen.has(key)) {
+          return;
+        }
+
+        seen.add(key);
+        collected.push({
+          trackNumber: currentIndex + 1,
+          pageNumber: episode.page || currentIndex + 1,
+          cid: cid,
+          title: buildSeasonEpisodeTitle(episode, currentIndex),
+          url: url,
+          isCurrent:
+            (episode.bvid && String(episode.bvid) === String(parsed.bvid || "")) ||
+            (cid && cid === String(parsed.cid || "")),
+        });
+        currentIndex += 1;
+      });
+    });
+
+    if (collected.length <= 1) {
+      return [];
+    }
+
+    return finalizeChapterList(collected);
+  }
+
+  function extractRuntimeChapters(parsed) {
+    var initialState = getRuntimeInitialState();
+    var chapters = extractVideoPageChapters(initialState, parsed);
+
+    if (chapters.length) {
+      return chapters;
+    }
+
+    chapters = extractSeasonChapters(initialState, parsed);
+    if (chapters.length) {
+      return chapters;
+    }
+
+    return finalizeChapterList([
+      {
+        trackNumber: 1,
+        pageNumber: getCurrentPageNumber(),
+        cid: String(parsed.cid || ""),
+        title: parsed.videoTitle || parsed.bookTitle || "当前章节",
+        url: buildPageUrl(parsed.sourceUrl || root.location.href, getCurrentPageNumber()),
+        isCurrent: true,
+      },
+    ]);
+  }
+
+  function getCurrentChapter() {
+    var current = state.chapters.find(function (chapter) {
+      return chapter.isCurrent;
+    });
+
+    return current || state.chapters[0] || null;
+  }
+
+  function updateActionState() {
+    var hasParsed = Boolean(state.parsed);
+    var hasCurrentAudio = Boolean(state.parsed && state.parsed.audioUrl);
+    var hasMultiChapters = state.chapters.length > 1;
+
+    dom.actions.refresh.disabled = state.exporting;
+    dom.actions.copyAudio.disabled = state.exporting || !hasCurrentAudio;
+    dom.actions.downloadSingle.disabled = state.exporting || !hasParsed;
+    dom.actions.downloadMulti.disabled = state.exporting || !hasParsed || !hasMultiChapters;
+  }
+
   function parseCurrentPage() {
     state.parsed = Parser.parseHtml(document.documentElement.outerHTML, {
       url: root.location.href,
     });
+    state.parsed.sourceUrl = buildPageUrl(state.parsed.sourceUrl || root.location.href, getCurrentPageNumber());
+    state.chapters = extractRuntimeChapters(state.parsed);
 
-    dom.audioPill.textContent = state.parsed.audioUrl ? "音频：已解析" : "音频：未解析";
+    var currentChapter = getCurrentChapter();
+
+    dom.audioPill.textContent = state.parsed.audioUrl ? "音频：已解析" : "音频：待抓取";
     dom.coverPill.textContent = state.parsed.coverUrl ? "封面：已解析" : "封面：未解析";
     dom.metaPill.textContent =
       state.parsed.bookTitle || state.parsed.videoTitle ? "元数据：已解析" : "元数据：未解析";
+    dom.chapterPill.textContent =
+      state.chapters.length > 1 ? "章节：" + state.chapters.length + " 章" : "章节：单集";
 
     dom.fields.seriesTitle.value = state.parsed.bookTitle || state.parsed.videoTitle || "";
-    dom.fields.episodeTitle.value = state.parsed.videoTitle || state.parsed.bookTitle || "";
+    dom.fields.episodeTitle.value =
+      (currentChapter && currentChapter.title) || state.parsed.videoTitle || state.parsed.bookTitle || "";
     dom.fields.authors.value = (state.parsed.authors || []).join(" / ");
     dom.fields.narrators.value = (state.parsed.narrators || []).join(" / ");
     dom.fields.description.value = state.parsed.summary || "";
     dom.fields.language.value = state.parsed.metadata.language || "zh-CN";
     dom.fields.publisher.value = state.parsed.metadata.publisher || "";
     dom.fields.folderName.value = state.parsed.suggestedFolderName || "";
-    dom.fields.audioFileName.value = state.parsed.audioFileName || "";
     dom.fields.generateCover.checked = true;
     dom.fields.generateSeriesJson.checked = true;
 
@@ -172,40 +409,73 @@
       [
         "解析完成。",
         "书名：" + (state.parsed.bookTitle || "未识别"),
+        "当前章节：" + ((currentChapter && currentChapter.title) || "未识别"),
         "作者：" + ((state.parsed.authors || []).join(" / ") || "未识别"),
-        "UP 主：" + (state.parsed.uploaderName || "未识别"),
-        "BVID：" + (state.parsed.bvid || "未识别"),
+        "章节数：" + String(state.chapters.length),
+        state.chapters.length > 1 ? "已可直接下载多章节 ZIP。" : "当前更适合用单集 ZIP。",
       ].join("\n")
     );
+
+    updateActionState();
   }
 
-  function collectOverrides() {
+  function collectCommonOverrides() {
     return {
       seriesTitle: dom.fields.seriesTitle.value,
-      episodeTitle: dom.fields.episodeTitle.value,
       authors: dom.fields.authors.value,
       narrators: dom.fields.narrators.value,
       description: dom.fields.description.value,
       language: dom.fields.language.value || "zh-CN",
       publisher: dom.fields.publisher.value,
       folderName: dom.fields.folderName.value,
-      audioFileName: dom.fields.audioFileName.value,
     };
   }
 
-  function buildBundle() {
-    return Parser.buildMetadata(state.parsed, collectOverrides());
+  function buildSingleBundle(parsedChapter) {
+    return Parser.buildMetadata(
+      parsedChapter,
+      Object.assign({}, collectCommonOverrides(), {
+        episodeTitle: dom.fields.episodeTitle.value || parsedChapter.videoTitle || parsedChapter.bookTitle,
+        trackNumber: 1,
+        trackTotal: 1,
+      })
+    );
+  }
+
+  function buildSeriesBundle() {
+    var currentChapter = getCurrentChapter();
+
+    return Parser.buildMetadata(
+      state.parsed,
+      Object.assign({}, collectCommonOverrides(), {
+        episodeTitle:
+          (currentChapter && currentChapter.title) || state.parsed.videoTitle || state.parsed.bookTitle,
+        trackNumber: 1,
+        trackTotal: state.chapters.length || 1,
+      })
+    );
+  }
+
+  function buildChapterBundle(parsedChapter, chapter) {
+    return Parser.buildMetadata(
+      parsedChapter,
+      Object.assign({}, collectCommonOverrides(), {
+        episodeTitle: chapter.title,
+        trackNumber: chapter.trackNumber,
+        trackTotal: chapter.trackTotal,
+      })
+    );
   }
 
   async function copyAudioUrl() {
     if (!state.parsed || !state.parsed.audioUrl) {
-      setStatus("没拿到音频直链。先确认页面已经可播放，或者让下载插件先完成解析。");
+      setStatus("当前页面还没拿到音频直链。可以先直接试试单集 ZIP，它会自动补抓当前章节。");
       return;
     }
 
     try {
       await navigator.clipboard.writeText(state.parsed.audioUrl);
-      setStatus("音频直链已复制到剪贴板。");
+      setStatus("当前章节音频直链已复制到剪贴板。");
     } catch (error) {
       setStatus("复制失败： " + error.message);
     }
@@ -242,28 +512,47 @@
     return response.blob();
   }
 
-  async function writeTextFile(directory, name, value) {
-    var handle = await directory.getFileHandle(name, { create: true });
-    var writable = await handle.createWritable();
-    await writable.write(value);
-    await writable.close();
-  }
-
-  async function writeBlobFile(directory, name, blob) {
-    var handle = await directory.getFileHandle(name, { create: true });
-    var writable = await handle.createWritable();
-    await writable.write(blob);
-    await writable.close();
-  }
-
-  async function exportToDirectory() {
-    if (!state.parsed || !state.parsed.audioUrl) {
-      setStatus("当前页面还没有解析出音频直链，不能导出。");
-      return;
+  async function fetchText(url, label) {
+    if (!url) {
+      throw new Error(label + " 链接为空");
     }
 
-    if (!root.showDirectoryPicker) {
-      setStatus("当前浏览器不支持目录写入 API，已建议改用“多文件下载”。");
+    var response = await fetch(url, {
+      credentials: "include",
+      mode: "cors",
+      referrer: root.location.href,
+    });
+
+    if (!response.ok) {
+      throw new Error(label + " 抓取失败，HTTP " + response.status);
+    }
+
+    return response.text();
+  }
+
+  async function resolveChapterParsed(chapter) {
+    var label = "第 " + Parser.formatTrackNumber(chapter.trackNumber, chapter.trackTotal) + " 章";
+
+    if (chapter.isCurrent && state.parsed && state.parsed.audioUrl) {
+      return cloneParsed(state.parsed, chapter.url);
+    }
+
+    var html = await fetchText(chapter.url, label + " 页面");
+    var parsed = Parser.parseHtml(html, { url: chapter.url });
+    parsed.sourceUrl = chapter.url;
+
+    if (!parsed.audioUrl) {
+      throw new Error(label + " 没有解析到音频直链");
+    }
+
+    return parsed;
+  }
+
+  async function downloadSingleZip() {
+    var currentChapter = getCurrentChapter();
+
+    if (!currentChapter) {
+      setStatus("当前页面没有可下载的章节。");
       return;
     }
 
@@ -272,64 +561,65 @@
     }
 
     state.exporting = true;
-    var bundle = buildBundle();
+    updateActionState();
 
     try {
-      setStatus("正在下载音频...");
-      var audioBlob = await fetchBlob(state.parsed.audioUrl, "音频");
-      var coverBlob = null;
+      setStatus("正在抓取当前章节页面...");
+      var parsedChapter = await resolveChapterParsed(currentChapter);
+      var bundle = buildSingleBundle(parsedChapter);
+      var rootPrefix = bundle.folderName + "/";
+      var zipEntries = [];
 
-      if (dom.fields.generateCover.checked && state.parsed.coverUrl) {
-        setStatus("正在下载音频...\n正在下载封面...");
-        coverBlob = await fetchBlob(state.parsed.coverUrl, "封面");
-      }
-
-      setStatus("正在选择目录...");
-      var rootDirectory = await root.showDirectoryPicker({
-        mode: "readwrite",
+      setStatus("正在下载当前章节音频...");
+      var audioBlob = await fetchBlob(parsedChapter.audioUrl, "当前章节音频");
+      zipEntries.push({
+        name: rootPrefix + bundle.audioFileName,
+        data: audioBlob,
       });
-      var targetDirectory = await rootDirectory.getDirectoryHandle(bundle.folderName, {
-        create: true,
+      zipEntries.push({
+        name: rootPrefix + "metadata.json",
+        data: JSON.stringify(bundle.metadata, null, 2),
       });
-
-      setStatus("正在写入文件...");
-      await writeBlobFile(targetDirectory, bundle.audioFileName, audioBlob);
-      await writeTextFile(
-        targetDirectory,
-        "metadata.json",
-        JSON.stringify(bundle.metadata, null, 2)
-      );
 
       if (dom.fields.generateSeriesJson.checked) {
-        await writeTextFile(
-          targetDirectory,
-          "series.json",
-          JSON.stringify(bundle.series, null, 2)
-        );
+        zipEntries.push({
+          name: rootPrefix + "series.json",
+          data: JSON.stringify(bundle.series, null, 2),
+        });
       }
 
-      if (coverBlob) {
-        await writeBlobFile(targetDirectory, bundle.coverFileName, coverBlob);
+      if (dom.fields.generateCover.checked && parsedChapter.coverUrl) {
+        setStatus("正在下载当前章节音频...\n正在下载封面...");
+        var coverBlob = await fetchBlob(parsedChapter.coverUrl, "封面");
+        zipEntries.push({
+          name: rootPrefix + bundle.coverFileName,
+          data: coverBlob,
+        });
       }
+
+      setStatus("正在打包单集 ZIP...");
+      var zipBlob = await ZipBuilder.createZip(zipEntries);
+      triggerDownload(zipBlob, bundle.folderName + ".zip");
 
       setStatus(
         [
-          "导出完成。",
-          "目录：" + bundle.folderName,
+          "单集 ZIP 下载已触发。",
+          "压缩包：" + bundle.folderName + ".zip",
           "音频：" + bundle.audioFileName,
-          "封面：" + (coverBlob ? bundle.coverFileName : "已跳过"),
+          "模式：单集",
         ].join("\n")
       );
     } catch (error) {
-      setStatus("导出失败： " + error.message + "\n可以先试试“复制音频直链”或“多文件下载”。");
+      setStatus("单集 ZIP 导出失败： " + error.message);
     } finally {
       state.exporting = false;
+      updateActionState();
     }
   }
 
-  async function downloadFiles() {
-    if (!state.parsed || !state.parsed.audioUrl) {
-      setStatus("当前页面还没有解析出音频直链，不能下载。");
+  async function downloadMultiZip() {
+    if (state.chapters.length <= 1) {
+      setStatus("当前没有识别到多章节。大多数短篇直接用“下载单集 ZIP”就够了。");
       return;
     }
 
@@ -338,39 +628,102 @@
     }
 
     state.exporting = true;
-    var bundle = buildBundle();
-    var prefix = bundle.folderName + "__";
+    updateActionState();
 
     try {
-      setStatus("正在准备多文件下载...");
-      var audioBlob = await fetchBlob(state.parsed.audioUrl, "音频");
-      triggerDownload(audioBlob, prefix + bundle.audioFileName);
-      triggerDownload(
-        new Blob([JSON.stringify(bundle.metadata, null, 2)], {
-          type: "application/json",
-        }),
-        prefix + "metadata.json"
-      );
+      var seriesBundle = buildSeriesBundle();
+      var rootPrefix = seriesBundle.folderName + "/";
+      var zipEntries = [];
+      var coverBlob = null;
+      var coverFileName = seriesBundle.coverFileName;
+      var rootCoverAdded = false;
+      var processedChapterFolders = [];
+      var chapterIndex;
 
       if (dom.fields.generateSeriesJson.checked) {
-        triggerDownload(
-          new Blob([JSON.stringify(bundle.series, null, 2)], {
-            type: "application/json",
-          }),
-          prefix + "series.json"
+        zipEntries.push({
+          name: rootPrefix + "series.json",
+          data: JSON.stringify(seriesBundle.series, null, 2),
+        });
+      }
+
+      for (chapterIndex = 0; chapterIndex < state.chapters.length; chapterIndex += 1) {
+        var chapter = state.chapters[chapterIndex];
+        var chapterLabel =
+          "第 " + Parser.formatTrackNumber(chapter.trackNumber, chapter.trackTotal) + "/" +
+          Parser.formatTrackNumber(chapter.trackTotal, chapter.trackTotal) + " 章";
+
+        setStatus("正在抓取 " + chapterLabel + " 页面...");
+        var parsedChapter = await resolveChapterParsed(chapter);
+
+        if (dom.fields.generateCover.checked && !coverBlob && parsedChapter.coverUrl) {
+          setStatus("正在抓取 " + chapterLabel + " 页面...\n正在下载系列封面...");
+          coverBlob = await fetchBlob(parsedChapter.coverUrl, "系列封面");
+        }
+
+        if (coverBlob && !rootCoverAdded) {
+          zipEntries.push({
+            name: rootPrefix + coverFileName,
+            data: coverBlob,
+          });
+          rootCoverAdded = true;
+        }
+
+        var chapterBundle = buildChapterBundle(parsedChapter, chapter);
+        var chapterFolderName = Parser.buildEpisodeFolderName(
+          chapter.trackNumber,
+          chapter.title,
+          chapter.trackTotal
         );
+
+        setStatus("正在下载 " + chapterLabel + " 音频...");
+        var audioBlob = await fetchBlob(parsedChapter.audioUrl, chapterLabel + " 音频");
+        zipEntries.push({
+          name: rootPrefix + chapterFolderName + "/" + chapterBundle.audioFileName,
+          data: audioBlob,
+        });
+        zipEntries.push({
+          name: rootPrefix + chapterFolderName + "/metadata.json",
+          data: JSON.stringify(chapterBundle.metadata, null, 2),
+        });
+
+        if (coverBlob) {
+          processedChapterFolders.forEach(function (previousFolderName) {
+            zipEntries.push({
+              name: rootPrefix + previousFolderName + "/" + chapterBundle.coverFileName,
+              data: coverBlob,
+            });
+          });
+          processedChapterFolders = [];
+        }
+
+        if (coverBlob) {
+          zipEntries.push({
+            name: rootPrefix + chapterFolderName + "/" + chapterBundle.coverFileName,
+            data: coverBlob,
+          });
+        } else {
+          processedChapterFolders.push(chapterFolderName);
+        }
       }
 
-      if (dom.fields.generateCover.checked && state.parsed.coverUrl) {
-        var coverBlob = await fetchBlob(state.parsed.coverUrl, "封面");
-        triggerDownload(coverBlob, prefix + bundle.coverFileName);
-      }
+      setStatus("正在打包多章节 ZIP...");
+      var zipBlob = await ZipBuilder.createZip(zipEntries);
+      triggerDownload(zipBlob, seriesBundle.folderName + ".zip");
 
-      setStatus("多文件下载已触发。浏览器如果拦截多个下载，记得手动允许当前站点。");
+      setStatus(
+        [
+          "多章节 ZIP 下载已触发。",
+          "压缩包：" + seriesBundle.folderName + ".zip",
+          "章节数：" + String(state.chapters.length),
+          "模式：多章节",
+        ].join("\n")
+      );
     } catch (error) {
-      setStatus("多文件下载失败： " + error.message);
+      setStatus("多章节 ZIP 导出失败： " + error.message);
     } finally {
       state.exporting = false;
+      updateActionState();
     }
   }
 
@@ -383,18 +736,12 @@
       }
     });
 
-    dom.root.querySelector('[data-action="refresh"]').addEventListener("click", function () {
+    dom.actions.refresh.addEventListener("click", function () {
       parseCurrentPage();
     });
-    dom.root
-      .querySelector('[data-action="copy-audio"]')
-      .addEventListener("click", copyAudioUrl);
-    dom.root
-      .querySelector('[data-action="export-dir"]')
-      .addEventListener("click", exportToDirectory);
-    dom.root
-      .querySelector('[data-action="download-files"]')
-      .addEventListener("click", downloadFiles);
+    dom.actions.copyAudio.addEventListener("click", copyAudioUrl);
+    dom.actions.downloadSingle.addEventListener("click", downloadSingleZip);
+    dom.actions.downloadMulti.addEventListener("click", downloadMultiZip);
   }
 
   function mount() {
@@ -413,6 +760,8 @@
     open: open,
     close: close,
     refresh: parseCurrentPage,
+    downloadSingle: downloadSingleZip,
+    downloadMulti: downloadMultiZip,
   };
 
   mount();

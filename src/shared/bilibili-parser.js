@@ -137,6 +137,40 @@
     return normalized.slice(0, 120);
   }
 
+  function toPositiveInteger(value, fallback) {
+    var numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) {
+      return fallback;
+    }
+
+    return Math.floor(numeric);
+  }
+
+  function formatTrackNumber(trackNumber, trackTotal) {
+    var resolvedTrackNumber = toPositiveInteger(trackNumber, 1);
+    var resolvedTrackTotal = Math.max(
+      resolvedTrackNumber,
+      toPositiveInteger(trackTotal, resolvedTrackNumber)
+    );
+    var digits = Math.max(2, String(resolvedTrackTotal).length);
+
+    return String(resolvedTrackNumber).padStart(digits, "0");
+  }
+
+  function buildEpisodeFolderName(trackNumber, episodeTitle, trackTotal) {
+    var trackLabel = formatTrackNumber(trackNumber, trackTotal);
+    var title = sanitizeFileName(episodeTitle, "未命名章节");
+
+    return sanitizeFileName(trackLabel + " - " + title, trackLabel + " - 未命名章节");
+  }
+
+  function buildAudioFileName(trackNumber, episodeTitle, trackTotal) {
+    return sanitizeFileName(
+      buildEpisodeFolderName(trackNumber, episodeTitle, trackTotal) + ".m4a",
+      formatTrackNumber(trackNumber, trackTotal) + " - 未命名章节.m4a"
+    );
+  }
+
   function splitPeople(value) {
     return uniqueStrings(
       normalizeWhitespace(value)
@@ -466,6 +500,8 @@
 
   function buildMetadata(parsed, overrides) {
     var options = overrides || {};
+    var trackNumber = toPositiveInteger(options.trackNumber, 1);
+    var trackTotal = Math.max(trackNumber, toPositiveInteger(options.trackTotal, trackNumber));
     var bookTitle = sanitizeFileName(
       options.seriesTitle || parsed.bookTitle || parsed.videoTitle,
       "未命名作品"
@@ -481,8 +517,8 @@
     var language = normalizeWhitespace(options.language || "zh-CN") || "zh-CN";
     var coverFileName = sanitizeFileName(options.coverFileName || "cover.jpg", "cover.jpg");
     var audioFileName = sanitizeFileName(
-      options.audioFileName || "01 - " + episodeTitle + ".m4a",
-      "01 - " + bookTitle + ".m4a"
+      options.audioFileName || buildAudioFileName(trackNumber, episodeTitle, trackTotal),
+      buildAudioFileName(trackNumber, bookTitle, trackTotal)
     );
     var folderName = sanitizeFileName(
       options.folderName || buildFolderName(bookTitle, authors),
@@ -621,6 +657,9 @@
     parseHtml: parseHtml,
     buildMetadata: buildMetadata,
     sanitizeFileName: sanitizeFileName,
+    formatTrackNumber: formatTrackNumber,
+    buildEpisodeFolderName: buildEpisodeFolderName,
+    buildAudioFileName: buildAudioFileName,
     normalizeUrl: normalizeUrl,
     normalizeBiliCoverUrl: normalizeBiliCoverUrl,
     splitPeople: splitPeople,

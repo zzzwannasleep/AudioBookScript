@@ -7,6 +7,7 @@ const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..");
 
 const parserPath = path.join(repoRoot, "src", "shared", "bilibili-parser.js");
+const zipBuilderPath = path.join(repoRoot, "src", "shared", "zip-builder.js");
 const exporterPath = path.join(repoRoot, "src", "browser", "exporter.js");
 const outputDir = path.join(repoRoot, "dist");
 const outputPath = path.join(outputDir, "bilibili-audiobook-exporter.user.js");
@@ -24,6 +25,7 @@ const homepageUrl = process.env.USERSCRIPT_HOMEPAGE_URL || defaultRepositoryUrl;
 const supportUrl = process.env.USERSCRIPT_SUPPORT_URL || `${defaultRepositoryUrl}/issues`;
 
 const parserSource = fs.readFileSync(parserPath, "utf8");
+const zipBuilderSource = fs.readFileSync(zipBuilderPath, "utf8");
 const exporterSource = fs.readFileSync(exporterPath, "utf8");
 
 const header = `// ==UserScript==
@@ -42,6 +44,10 @@ const header = `// ==UserScript==
 `;
 
 fs.mkdirSync(outputDir, { recursive: true });
-fs.writeFileSync(outputPath, header + parserSource + "\n\n" + exporterSource + "\n", "utf8");
+fs.writeFileSync(
+  outputPath,
+  header + parserSource + "\n\n" + zipBuilderSource + "\n\n" + exporterSource + "\n",
+  "utf8"
+);
 
 console.log(`Built userscript: ${outputPath}`);
