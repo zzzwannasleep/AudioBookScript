@@ -1,0 +1,46 @@
+name: Build Userscript
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check source syntax
+        run: |
+          node --check src/shared/bilibili-parser.js
+          node --check src/browser/exporter.js
+
+      - name: Build userscript
+        run: node tools/build-userscript.mjs
+
+      - name: Check built userscript syntax
+        run: node --check dist/bilibili-audiobook-exporter.user.js
+
+      - name: Verify build output
+        run: test -f dist/bilibili-audiobook-exporter.user.js
+
+      - name: Upload userscript artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bilibili-audiobook-exporter-userscript
+          path: dist/bilibili-audiobook-exporter.user.js
+          if-no-files-found: error

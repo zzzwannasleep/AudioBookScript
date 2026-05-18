@@ -21,10 +21,15 @@
 node tools/build-userscript.mjs
 ```
 
+## 安装链接
+
+- 直接安装 userscript：
+  [点击安装 `bilibili-audiobook-exporter.user.js`](https://github.com/zzzwannasleep/AudioBookScript/raw/refs/heads/main/dist/bilibili-audiobook-exporter.user.js)
+
 ## 安装与使用
 
 1. 安装 Tampermonkey 或同类 userscript 管理器。
-2. 导入 `dist/bilibili-audiobook-exporter.user.js`。
+2. 点击上面的安装链接，或手动导入 `dist/bilibili-audiobook-exporter.user.js`。
 3. 打开任意 `https://www.bilibili.com/video/*` 页面。
 4. 右下角会出现 `导出有声书` 按钮。
 5. 点开后可预览并编辑：
