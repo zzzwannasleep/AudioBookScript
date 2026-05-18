@@ -11,6 +11,10 @@
 // @grant        none
 // ==/UserScript==
 
+(function(root){
+  root.__BILIBILI_AUDIOBOOK_BUILD_INFO__ = {"version":"0.1.0","downloadUrl":"https://raw.githubusercontent.com/zzzwannasleep/AudioBookScript/userscript-dist/bilibili-audiobook-exporter.user.js","updateUrl":"https://raw.githubusercontent.com/zzzwannasleep/AudioBookScript/userscript-dist/bilibili-audiobook-exporter.user.js","updateMetaUrl":"https://api.github.com/repos/zzzwannasleep/AudioBookScript/contents/bilibili-audiobook-exporter.user.js?ref=userscript-dist","homepageUrl":"https://github.com/zzzwannasleep/AudioBookScript","supportUrl":"https://github.com/zzzwannasleep/AudioBookScript/issues","repository":"zzzwannasleep/AudioBookScript"};
+})(typeof globalThis !== "undefined" ? globalThis : this);
+
 (function (root, factory) {
   if (typeof module === "object" && module.exports) {
     module.exports = factory();
@@ -866,6 +870,9 @@
 
   var Parser = root.BilibiliAudiobookParser;
   var ZipBuilder = root.BilibiliZipBuilder;
+  var BuildInfo = root.__BILIBILI_AUDIOBOOK_BUILD_INFO__ || {};
+  var UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+  var UPDATE_STORAGE_KEY = "bilibili-audiobook-exporter:update-state";
 
   if (!Parser) {
     console.error("[bilibili-audiobook-exporter] parser is missing");
@@ -892,6 +899,15 @@
     chapters: [],
     mounted: false,
     exporting: false,
+    update: {
+      currentVersion: BuildInfo.version || Parser.version || "0.1.0",
+      latestVersion: "",
+      installUrl: BuildInfo.downloadUrl || BuildInfo.updateUrl || "",
+      available: false,
+      checking: false,
+      lastCheckedAt: 0,
+      lastError: "",
+    },
   };
 
   var dom = {};
@@ -919,6 +935,7 @@
       ".be-note{margin:0;color:#64748b;font-size:12px;line-height:1.5;}",
       ".be-pill-row{display:flex;flex-wrap:wrap;gap:8px;}",
       ".be-pill{display:inline-flex;align-items:center;gap:6px;padding:8px 10px;border-radius:999px;background:#f8fafc;color:#334155;font-size:12px;}",
+      ".be-pill.is-hot{background:#fff7ed;color:#c2410c;}",
       ".be-actions{display:flex;flex-wrap:wrap;gap:10px;padding-top:8px;}",
       ".be-button{border:0;border-radius:14px;padding:11px 14px;font:inherit;font-size:14px;cursor:pointer;}",
       ".be-button.primary{background:#0f172a;color:#fff;}",
@@ -926,6 +943,8 @@
       ".be-button.accent{background:#00a1d6;color:#fff;}",
       ".be-button:disabled{opacity:.55;cursor:not-allowed;}",
       ".be-status{padding:12px 14px;border-radius:16px;background:#f8fafc;color:#1e293b;font-size:13px;line-height:1.6;white-space:pre-wrap;}",
+      ".be-update-banner{display:none;padding:12px 14px;border-radius:16px;background:#fff7ed;color:#9a3412;font-size:13px;line-height:1.6;}",
+      ".be-update-banner.is-visible{display:block;}",
       ".be-checks{display:flex;flex-wrap:wrap;gap:12px;}",
       ".be-check{display:flex;align-items:center;gap:8px;font-size:13px;color:#334155;}",
       "@media (max-width: 720px){.be-grid{grid-template-columns:1fr;}.be-panel{border-radius:18px;}.be-root{right:16px;bottom:16px;}}",
@@ -953,7 +972,9 @@
       '        <span class="be-pill" data-pill="cover">封面：未解析</span>',
       '        <span class="be-pill" data-pill="meta">元数据：未解析</span>',
       '        <span class="be-pill" data-pill="chapters">章节：未识别</span>',
+      '        <span class="be-pill" data-pill="update">更新：待检查</span>',
       "      </div>",
+      '      <div class="be-update-banner" data-update-banner></div>',
       '      <div class="be-grid">',
       '        <label class="be-field"><span class="be-label">书名 / 系列名</span><input class="be-input" data-field="seriesTitle" /></label>',
       '        <label class="be-field"><span class="be-label">当前章节标题（单集模式）</span><input class="be-input" data-field="episodeTitle" /></label>',
@@ -971,6 +992,7 @@
       "      </div>",
       '      <div class="be-actions">',
       '        <button class="be-button secondary" type="button" data-action="refresh">重新解析</button>',
+      '        <button class="be-button secondary" type="button" data-action="check-update">检查更新</button>',
       '        <button class="be-button secondary" type="button" data-action="copy-audio">复制当前音频直链</button>',
       '        <button class="be-button accent" type="button" data-action="download-single">下载单集 ZIP</button>',
       '        <button class="be-button primary" type="button" data-action="download-multi">下载多章节 ZIP</button>',
@@ -992,8 +1014,11 @@
     dom.coverPill = rootEl.querySelector('[data-pill="cover"]');
     dom.metaPill = rootEl.querySelector('[data-pill="meta"]');
     dom.chapterPill = rootEl.querySelector('[data-pill="chapters"]');
+    dom.updatePill = rootEl.querySelector('[data-pill="update"]');
+    dom.updateBanner = rootEl.querySelector("[data-update-banner]");
     dom.actions = {
       refresh: rootEl.querySelector('[data-action="refresh"]'),
+      checkUpdate: rootEl.querySelector('[data-action="check-update"]'),
       copyAudio: rootEl.querySelector('[data-action="copy-audio"]'),
       downloadSingle: rootEl.querySelector('[data-action="download-single"]'),
       downloadMulti: rootEl.querySelector('[data-action="download-multi"]'),
@@ -1014,6 +1039,270 @@
 
   function setStatus(message) {
     dom.status.textContent = message;
+  }
+
+  function readUpdateStorage() {
+    try {
+      return JSON.parse(root.localStorage.getItem(UPDATE_STORAGE_KEY) || "{}");
+    } catch (error) {
+      return {};
+    }
+  }
+
+  function writeUpdateStorage(value) {
+    try {
+      root.localStorage.setItem(UPDATE_STORAGE_KEY, JSON.stringify(value));
+    } catch (error) {
+      return;
+    }
+  }
+
+  function parseVersion(value) {
+    return String(value || "")
+      .split(/[^0-9]+/)
+      .filter(Boolean)
+      .map(function (item) {
+        return Number(item);
+      });
+  }
+
+  function compareVersions(left, right) {
+    var leftParts = parseVersion(left);
+    var rightParts = parseVersion(right);
+    var length = Math.max(leftParts.length, rightParts.length);
+    var index;
+
+    for (index = 0; index < length; index += 1) {
+      var leftValue = leftParts[index] || 0;
+      var rightValue = rightParts[index] || 0;
+
+      if (leftValue > rightValue) {
+        return 1;
+      }
+
+      if (leftValue < rightValue) {
+        return -1;
+      }
+    }
+
+    if (String(left || "") === String(right || "")) {
+      return 0;
+    }
+
+    return String(left || "") > String(right || "") ? 1 : -1;
+  }
+
+  function extractUserscriptHeaderValue(text, key) {
+    var pattern = new RegExp("^//\\s*@" + key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s+(.+)$", "mi");
+    var match = pattern.exec(String(text || ""));
+    return match && match[1] ? match[1].trim() : "";
+  }
+
+  function decodeBase64Text(value) {
+    try {
+      return root.atob(String(value || "").replace(/\s+/g, ""));
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function getUpdateMetaUrl() {
+    return BuildInfo.updateMetaUrl || "";
+  }
+
+  function getInstallUrl() {
+    return state.update.installUrl || BuildInfo.downloadUrl || BuildInfo.updateUrl || "";
+  }
+
+  function setLauncherText() {
+    dom.launcher.textContent = state.update.available ? "导出有声书 · 有更新" : "导出有声书";
+  }
+
+  function renderUpdateState() {
+    if (state.update.checking) {
+      dom.updatePill.textContent = "更新：检查中";
+      dom.updatePill.classList.remove("is-hot");
+      dom.actions.checkUpdate.textContent = "检查中...";
+      dom.updateBanner.classList.remove("is-visible");
+      setLauncherText();
+      return;
+    }
+
+    if (state.update.available) {
+      dom.updatePill.textContent = "更新：" + state.update.latestVersion + " 可用";
+      dom.updatePill.classList.add("is-hot");
+      dom.actions.checkUpdate.textContent = "更新到 " + state.update.latestVersion;
+      dom.updateBanner.textContent =
+        "检测到新版本 " + state.update.latestVersion + "。点击“更新到 " +
+        state.update.latestVersion + "”即可安装新脚本。";
+      dom.updateBanner.classList.add("is-visible");
+      setLauncherText();
+      return;
+    }
+
+    dom.updatePill.textContent =
+      state.update.lastCheckedAt ? "更新：已是最新" : "更新：待检查";
+    dom.updatePill.classList.remove("is-hot");
+    dom.actions.checkUpdate.textContent = "检查更新";
+
+    if (state.update.lastError) {
+      dom.updateBanner.textContent = "更新检查失败：" + state.update.lastError;
+      dom.updateBanner.classList.add("is-visible");
+    } else {
+      dom.updateBanner.classList.remove("is-visible");
+      dom.updateBanner.textContent = "";
+    }
+
+    setLauncherText();
+  }
+
+  function hydrateStoredUpdateState() {
+    var stored = readUpdateStorage();
+    var currentVersion = state.update.currentVersion;
+
+    if (stored.currentVersion && compareVersions(stored.currentVersion, currentVersion) !== 0) {
+      writeUpdateStorage({});
+      renderUpdateState();
+      return;
+    }
+
+    if (stored.lastCheckedAt) {
+      state.update.lastCheckedAt = stored.lastCheckedAt;
+    }
+
+    if (stored.installUrl) {
+      state.update.installUrl = stored.installUrl;
+    }
+
+    if (stored.latestVersion && compareVersions(stored.latestVersion, currentVersion) > 0) {
+      state.update.latestVersion = stored.latestVersion;
+      state.update.available = true;
+    }
+
+    renderUpdateState();
+  }
+
+  function persistUpdateState() {
+    writeUpdateStorage({
+      currentVersion: state.update.currentVersion,
+      latestVersion: state.update.latestVersion,
+      installUrl: state.update.installUrl,
+      lastCheckedAt: state.update.lastCheckedAt,
+    });
+  }
+
+  function shouldCheckForUpdates(force) {
+    if (force) {
+      return true;
+    }
+
+    if (!getUpdateMetaUrl()) {
+      return false;
+    }
+
+    if (!state.update.lastCheckedAt) {
+      return true;
+    }
+
+    return Date.now() - state.update.lastCheckedAt >= UPDATE_CHECK_INTERVAL_MS;
+  }
+
+  async function fetchRemoteVersionInfo() {
+    var metaUrl = getUpdateMetaUrl();
+
+    if (!metaUrl) {
+      throw new Error("未配置更新元数据地址");
+    }
+
+    var requestUrl = metaUrl + (metaUrl.indexOf("?") >= 0 ? "&" : "?") + "_ts=" + Date.now();
+    var response = await fetch(requestUrl, {
+      credentials: "omit",
+      mode: "cors",
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      throw new Error("HTTP " + response.status);
+    }
+
+    var payload = await response.json();
+    var content = decodeBase64Text(payload.content || "");
+    var remoteVersion = extractUserscriptHeaderValue(content, "version");
+    var remoteInstallUrl =
+      extractUserscriptHeaderValue(content, "downloadURL") ||
+      payload.download_url ||
+      BuildInfo.downloadUrl ||
+      BuildInfo.updateUrl ||
+      "";
+
+    if (!remoteVersion) {
+      throw new Error("未能解析远端版本号");
+    }
+
+    return {
+      version: remoteVersion,
+      installUrl: remoteInstallUrl,
+    };
+  }
+
+  async function checkForUpdates(force, silent) {
+    if (state.update.checking || !shouldCheckForUpdates(force)) {
+      return;
+    }
+
+    state.update.checking = true;
+    state.update.lastError = "";
+    renderUpdateState();
+
+    try {
+      var remoteInfo = await fetchRemoteVersionInfo();
+      state.update.lastCheckedAt = Date.now();
+      state.update.latestVersion = remoteInfo.version;
+      state.update.installUrl = remoteInfo.installUrl || state.update.installUrl;
+      state.update.available =
+        compareVersions(remoteInfo.version, state.update.currentVersion) > 0;
+      state.update.lastError = "";
+      persistUpdateState();
+      renderUpdateState();
+
+      if (!silent) {
+        if (state.update.available) {
+          setStatus(
+            "检测到新版本 " +
+              remoteInfo.version +
+              "。\n点击“更新到 " +
+              remoteInfo.version +
+              "”即可安装新版脚本。"
+          );
+        } else {
+          setStatus("已检查更新，当前脚本已经是最新版本。");
+        }
+      }
+    } catch (error) {
+      state.update.lastCheckedAt = Date.now();
+      state.update.lastError = error.message || "未知错误";
+      persistUpdateState();
+      renderUpdateState();
+
+      if (!silent) {
+        setStatus("检查更新失败： " + state.update.lastError);
+      }
+    } finally {
+      state.update.checking = false;
+      renderUpdateState();
+    }
+  }
+
+  function openUpdateInstall() {
+    var installUrl = getInstallUrl();
+
+    if (!installUrl) {
+      setStatus("当前没有可用的安装链接。");
+      return;
+    }
+
+    root.open(installUrl, "_blank", "noopener");
+    setStatus("已打开更新链接。如果 Tampermonkey 接管成功，会提示你安装新版本。");
   }
 
   function open() {
@@ -1235,9 +1524,11 @@
     var hasMultiChapters = state.chapters.length > 1;
 
     dom.actions.refresh.disabled = state.exporting;
+    dom.actions.checkUpdate.disabled = state.exporting || state.update.checking;
     dom.actions.copyAudio.disabled = state.exporting || !hasCurrentAudio;
     dom.actions.downloadSingle.disabled = state.exporting || !hasParsed;
     dom.actions.downloadMulti.disabled = state.exporting || !hasParsed || !hasMultiChapters;
+    renderUpdateState();
   }
 
   function parseCurrentPage() {
@@ -1602,6 +1893,14 @@
     dom.actions.refresh.addEventListener("click", function () {
       parseCurrentPage();
     });
+    dom.actions.checkUpdate.addEventListener("click", function () {
+      if (state.update.available) {
+        openUpdateInstall();
+        return;
+      }
+
+      checkForUpdates(true, false);
+    });
     dom.actions.copyAudio.addEventListener("click", copyAudioUrl);
     dom.actions.downloadSingle.addEventListener("click", downloadSingleZip);
     dom.actions.downloadMulti.addEventListener("click", downloadMultiZip);
@@ -1614,8 +1913,10 @@
 
     injectStyle();
     createDom();
+    hydrateStoredUpdateState();
     bindEvents();
     parseCurrentPage();
+    checkForUpdates(false, true);
     state.mounted = true;
   }
 
@@ -1623,6 +1924,7 @@
     open: open,
     close: close,
     refresh: parseCurrentPage,
+    checkForUpdates: checkForUpdates,
     downloadSingle: downloadSingleZip,
     downloadMulti: downloadMultiZip,
   };

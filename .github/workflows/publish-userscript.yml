@@ -32,6 +32,7 @@ jobs:
       - name: Check source syntax
         run: |
           node --check src/shared/bilibili-parser.js
+          node --check src/shared/zip-builder.js
           node --check src/browser/exporter.js
 
       - name: Build live userscript
@@ -39,6 +40,7 @@ jobs:
           USERSCRIPT_VERSION: 0.1.${{ github.run_number }}.${{ github.run_attempt }}
           USERSCRIPT_DOWNLOAD_URL: https://raw.githubusercontent.com/${{ github.repository }}/userscript-dist/bilibili-audiobook-exporter.user.js
           USERSCRIPT_UPDATE_URL: https://raw.githubusercontent.com/${{ github.repository }}/userscript-dist/bilibili-audiobook-exporter.user.js
+          USERSCRIPT_UPDATE_META_URL: https://api.github.com/repos/${{ github.repository }}/contents/bilibili-audiobook-exporter.user.js?ref=userscript-dist
           USERSCRIPT_HOMEPAGE_URL: https://github.com/${{ github.repository }}
           USERSCRIPT_SUPPORT_URL: https://github.com/${{ github.repository }}/issues
         run: node tools/build-userscript.mjs

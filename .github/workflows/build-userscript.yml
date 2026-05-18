@@ -27,6 +27,7 @@ jobs:
       - name: Check source syntax
         run: |
           node --check src/shared/bilibili-parser.js
+          node --check src/shared/zip-builder.js
           node --check src/browser/exporter.js
 
       - name: Build userscript

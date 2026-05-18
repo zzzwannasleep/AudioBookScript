@@ -50,6 +50,7 @@ node tools/build-userscript.mjs
    - `metadata.json`
    - `series.json`
    - `cover.jpg`
+8. 脚本启动后会自动检查实时发布通道；如果检测到新构建版本，悬浮按钮会显示 `有更新`，面板里也会出现 `更新到 x.x.x` 按钮。
 
 通过“实时发布通道”安装后，只要 Tampermonkey 开着自动更新检查，脚本后续会跟随工作流发布自动更新。
 

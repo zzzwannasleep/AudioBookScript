@@ -16,11 +16,14 @@ const defaultRepositoryUrl =
   `https://github.com/${defaultRepository}`;
 const defaultLiveChannelUrl =
   `https://raw.githubusercontent.com/${defaultRepository}/userscript-dist/bilibili-audiobook-exporter.user.js`;
+const defaultUpdateMetaUrl =
+  `https://api.github.com/repos/${defaultRepository}/contents/bilibili-audiobook-exporter.user.js?ref=userscript-dist`;
 const version = process.env.USERSCRIPT_VERSION || "0.1.0";
 const downloadUrl =
   process.env.USERSCRIPT_DOWNLOAD_URL ||
   defaultLiveChannelUrl;
 const updateUrl = process.env.USERSCRIPT_UPDATE_URL || downloadUrl;
+const updateMetaUrl = process.env.USERSCRIPT_UPDATE_META_URL || defaultUpdateMetaUrl;
 const homepageUrl = process.env.USERSCRIPT_HOMEPAGE_URL || defaultRepositoryUrl;
 const supportUrl = process.env.USERSCRIPT_SUPPORT_URL || `${defaultRepositoryUrl}/issues`;
 
@@ -43,10 +46,24 @@ const header = `// ==UserScript==
 
 `;
 
+const buildInfoScript = `(function(root){
+  root.__BILIBILI_AUDIOBOOK_BUILD_INFO__ = ${JSON.stringify({
+    version,
+    downloadUrl,
+    updateUrl,
+    updateMetaUrl,
+    homepageUrl,
+    supportUrl,
+    repository: defaultRepository,
+  })};
+})(typeof globalThis !== "undefined" ? globalThis : this);
+
+`;
+
 fs.mkdirSync(outputDir, { recursive: true });
 fs.writeFileSync(
   outputPath,
-  header + parserSource + "\n\n" + zipBuilderSource + "\n\n" + exporterSource + "\n",
+  header + buildInfoScript + parserSource + "\n\n" + zipBuilderSource + "\n\n" + exporterSource + "\n",
   "utf8"
 );
 
