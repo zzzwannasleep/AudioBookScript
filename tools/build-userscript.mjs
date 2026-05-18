@@ -42,7 +42,10 @@ const header = `// ==UserScript==
 // @supportURL   ${supportUrl}
 // @downloadURL  ${downloadUrl}
 // @updateURL    ${updateUrl}
-// @grant        none
+// @grant        unsafeWindow
+// @grant        GM_xmlhttpRequest
+// @grant        GM.xmlHttpRequest
+// @connect      *
 // ==/UserScript==
 
 `;

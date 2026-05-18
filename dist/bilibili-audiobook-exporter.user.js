@@ -9,7 +9,10 @@
 // @supportURL   https://github.com/zzzwannasleep/AudioBookScript/issues
 // @downloadURL  https://raw.githubusercontent.com/zzzwannasleep/AudioBookScript/userscript-dist/bilibili-audiobook-exporter.user.js
 // @updateURL    https://raw.githubusercontent.com/zzzwannasleep/AudioBookScript/userscript-dist/bilibili-audiobook-exporter.user.js
-// @grant        none
+// @grant        unsafeWindow
+// @grant        GM_xmlhttpRequest
+// @grant        GM.xmlHttpRequest
+// @connect      *
 // ==/UserScript==
 
 (function(root){
@@ -873,6 +876,7 @@
   var ZipBuilder = root.BilibiliZipBuilder;
   var BuildInfo = root.__BILIBILI_AUDIOBOOK_BUILD_INFO__ || {};
   var BILIBILI_API_ORIGIN = "https://api.bilibili.com";
+  var pageWindow = typeof unsafeWindow !== "undefined" ? unsafeWindow : root;
   var UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
   var UPDATE_STORAGE_KEY = "bilibili-audiobook-exporter:update-state";
 
@@ -1439,6 +1443,56 @@
     };
   }
 
+  function getUserscriptRequestApi() {
+    if (typeof GM_xmlhttpRequest === "function") {
+      return GM_xmlhttpRequest;
+    }
+
+    if (typeof GM !== "undefined" && GM && typeof GM.xmlHttpRequest === "function") {
+      return GM.xmlHttpRequest.bind(GM);
+    }
+
+    return null;
+  }
+
+  function canUseUserscriptRequest() {
+    return Boolean(getUserscriptRequestApi());
+  }
+
+  function requestViaUserscript(options) {
+    return new Promise(function (resolve, reject) {
+      var requester = getUserscriptRequestApi();
+
+      if (!requester) {
+        reject(new Error("Userscript request API unavailable"));
+        return;
+      }
+
+      requester({
+        method: options.method || "GET",
+        url: options.url,
+        responseType: options.responseType,
+        timeout: options.timeout || 300000,
+        onload: function (response) {
+          var status = Number(response && response.status ? response.status : 200);
+
+          if (status < 200 || status >= 300) {
+            reject(new Error((options.label || "Request") + " HTTP " + status));
+            return;
+          }
+
+          resolve(response);
+        },
+        onerror: function () {
+          reject(new Error((options.label || "Request") + " failed"));
+        },
+        ontimeout: function () {
+          reject(new Error((options.label || "Request") + " timed out"));
+        },
+      });
+    });
+  }
+
   async function fetchJson(path, params) {
     var requestUrl = new URL(path, BILIBILI_API_ORIGIN);
     var query = params || {};
@@ -1522,7 +1576,7 @@
   }
 
   function getRuntimeInitialState() {
-    return root.__INITIAL_STATE__ || null;
+    return pageWindow.__INITIAL_STATE__ || root.__INITIAL_STATE__ || null;
   }
 
   function finalizeChapterList(chapters) {
@@ -2288,7 +2342,7 @@
     }, 3000);
   }
 
-  async function fetchBlob(url, label) {
+  async function fetchBlobLegacy(url, label) {
     if (!url) {
       throw new Error(label + " 链接为空");
     }
@@ -2519,7 +2573,7 @@
     return buildParsedFromApiData(chapter, viewData, playurlPayload && playurlPayload.data);
   }
 
-  async function fetchText(url, label) {
+  async function fetchTextLegacy(url, label) {
     if (!url) {
       throw new Error(label + " 链接为空");
     }
@@ -2535,6 +2589,46 @@
     }
 
     return response.text();
+  }
+
+  async function fetchBlob(url, label) {
+    if (!url) {
+      throw new Error(label + " link is empty");
+    }
+
+    if (!getSameOriginPage(url) && canUseUserscriptRequest()) {
+      var crossOriginResponse = await requestViaUserscript({
+        url: url,
+        responseType: "arraybuffer",
+        label: label,
+      });
+
+      return new Blob([crossOriginResponse.response || new ArrayBuffer(0)]);
+    }
+
+    return fetchBlobLegacy(url, label);
+  }
+
+  async function fetchText(url, label) {
+    if (!url) {
+      throw new Error(label + " link is empty");
+    }
+
+    if (!getSameOriginPage(url) && canUseUserscriptRequest()) {
+      var crossOriginResponse = await requestViaUserscript({
+        url: url,
+        responseType: "text",
+        label: label,
+      });
+
+      return String(
+        crossOriginResponse.responseText != null
+          ? crossOriginResponse.responseText
+          : crossOriginResponse.response || ""
+      );
+    }
+
+    return fetchTextLegacy(url, label);
   }
 
   async function resolveChapterParsedLegacy(chapter) {
